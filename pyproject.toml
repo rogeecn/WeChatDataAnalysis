@@ -18,8 +18,6 @@ dependencies = [
     "requests>=2.32.4",
     "loguru>=0.7.0",
     "zstandard>=0.23.0",
-    "pymem>=1.14.0; sys_platform == 'win32'",
-    "yara-python>=4.5.4",
     "pilk>=0.2.4",
 ]
 
