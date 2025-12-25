@@ -55,7 +55,7 @@
                 <svg class="w-4 h-4 mr-1 text-[#10AEEF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
-                使用 <a href="https://github.com/gzygood/DbkeyHook" target="_blank" class="text-[#07C160] hover:text-[#06AD56]">DbkeyHook</a> 等工具获取的64位十六进制字符串
+                使用 <a href="https://github.com/ycccccccy/wx_key" target="_blank" class="text-[#07C160] hover:text-[#06AD56]">wx_key</a> 等工具获取的64位十六进制字符串
               </p>
             </div>
             
@@ -113,7 +113,7 @@
         </div>
       </div>
 
-      <!-- 步骤2: 图片密钥获取 -->
+      <!-- 步骤2: 填写图片密钥 -->
       <div v-if="currentStep === 1" class="bg-white rounded-2xl border border-[#EDEDED]">
         <div class="p-8">
           <div class="flex items-center mb-6">
@@ -124,7 +124,7 @@
             </div>
             <div>
               <h2 class="text-xl font-bold text-[#000000e6]">图片密钥</h2>
-              <p class="text-sm text-[#7F7F7F]">获取图片解密所需的密钥</p>
+              <p class="text-sm text-[#7F7F7F]">请使用 wx_key 获取后在此填写</p>
             </div>
           </div>
 
@@ -136,152 +136,64 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
                 <div class="text-sm text-blue-800">
-                  <div class="font-medium mb-2">获取密钥小提示</div>
-                  <ul class="list-disc list-inside space-y-1">
-                    <li><strong>AES 密钥</strong>仅在部分图片（V4-V2）解密时需要；仅有 XOR 也可以先继续下一步，失败原因会提示。</li>
-                    <li>获取 AES 需要微信正在运行；部分环境需<strong>以管理员身份运行后端</strong>（否则可能无法读取微信进程内存）。</li>
-                    <li>若一直获取不到 AES：完全退出微信 → 重新启动并登录 → 打开朋友圈图片并点开大图 2-3 次 → 回到本页点<strong>强制重新提取</strong>。</li>
-                  </ul>
+                  使用 <a href="https://github.com/ycccccccy/wx_key" target="_blank" class="underline">wx_key</a> 获取密钥；AES 可选（V4-V2 需要）。
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- 密钥信息显示 -->
-          <div class="space-y-4 mb-6">
-            <div class="bg-gray-50 rounded-lg p-4">
-              <div class="flex justify-between items-center mb-2">
-                <span class="text-sm font-medium text-[#000000e6]">XOR 密钥</span>
-                <button
-                  type="button"
-                  class="font-mono text-sm px-3 py-1 bg-white rounded border border-[#EDEDED] transition-colors"
-                  :class="mediaKeys.xor_key ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60'"
-                  :title="mediaKeys.xor_key ? '点击复制' : ''"
-                  @click="copyKey('XOR 密钥', mediaKeys.xor_key)"
-                >
-                  {{ mediaKeys.xor_key || '未获取' }}
-                </button>
-              </div>
-              <div class="flex justify-between items-center">
-                <span class="text-sm font-medium text-[#000000e6]">AES 密钥</span>
-                <button
-                  type="button"
-                  class="font-mono text-sm px-3 py-1 bg-white rounded border border-[#EDEDED] transition-colors"
-                  :class="mediaKeys.aes_key ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60'"
-                  :title="mediaKeys.aes_key ? '点击复制' : ''"
-                  @click="copyKey('AES 密钥', mediaKeys.aes_key)"
-                >
-                  {{ mediaKeys.aes_key || '未获取' }}
-                </button>
-              </div>
-            </div>
-
-            <div v-if="mediaKeys.message" class="text-sm text-[#7F7F7F] flex items-start">
-              <svg class="w-4 h-4 mr-2 mt-0.5 flex-shrink-0 text-[#10AEEF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-              </svg>
-              {{ mediaKeys.message }}
-            </div>
-
-            <div v-if="copyMessage" class="text-sm text-[#07C160] flex items-start">
-              <svg class="w-4 h-4 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-              </svg>
-              {{ copyMessage }}
-            </div>
-          </div>
-
-          <!-- 手动输入密钥（自动获取失败时） -->
+          <!-- 填写密钥 -->
           <div class="mb-6">
-            <details class="text-sm">
-              <summary class="cursor-pointer text-[#7F7F7F] hover:text-[#000000e6]">
-                <span class="ml-1">手动输入密钥（自动获取失败时）</span>
-              </summary>
-              <div class="mt-3 bg-gray-50 rounded-lg p-4">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label class="block text-sm font-medium text-[#000000e6] mb-2">XOR 密钥 <span class="text-red-500">*</span></label>
-                    <input
-                      v-model="manualKeys.xor_key"
-                      type="text"
-                      placeholder="例如：0xA5 或 A5"
-                      class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
-                    />
-                    <p v-if="manualKeyErrors.xor_key" class="text-xs text-red-500 mt-1">{{ manualKeyErrors.xor_key }}</p>
-                  </div>
-                  <div>
-                    <label class="block text-sm font-medium text-[#000000e6] mb-2">AES 密钥（可选）</label>
-                    <input
-                      v-model="manualKeys.aes_key"
-                      type="text"
-                      placeholder="16 个字符（V4-V2 需要）"
-                      class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
-                    />
-                    <p v-if="manualKeyErrors.aes_key" class="text-xs text-red-500 mt-1">{{ manualKeyErrors.aes_key }}</p>
-                  </div>
+            <div class="bg-gray-50 rounded-lg p-4">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-[#000000e6] mb-2">XOR（必填）</label>
+                  <input
+                    v-model="manualKeys.xor_key"
+                    type="text"
+                    placeholder="例如：0xA5"
+                    class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
+                  />
+                  <p v-if="manualKeyErrors.xor_key" class="text-xs text-red-500 mt-1">{{ manualKeyErrors.xor_key }}</p>
                 </div>
-
-                <div class="flex flex-wrap gap-3 mt-4">
-                  <button
-                    type="button"
-                    @click="applyManualKeys({ save: false })"
-                    class="inline-flex items-center px-4 py-2 bg-white text-[#10AEEF] border border-[#10AEEF] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
-                  >
-                    使用手动密钥
-                  </button>
-                  <button
-                    type="button"
-                    @click="applyManualKeys({ save: true })"
-                    :disabled="manualSaving"
-                    class="inline-flex items-center px-4 py-2 bg-[#10AEEF] text-white rounded-lg font-medium hover:bg-[#0D9BD9] transition-all duration-200 disabled:opacity-50"
-                  >
-                    {{ manualSaving ? '保存中...' : '保存并使用' }}
-                  </button>
-                  <button
-                    type="button"
-                    @click="clearManualKeys"
-                    class="inline-flex items-center px-4 py-2 bg-white text-[#7F7F7F] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
-                  >
-                    清空
-                  </button>
-                </div>
-
-                <div class="text-xs text-[#7F7F7F] mt-3">
-                  <p>说明：</p>
-                  <ul class="list-disc list-inside space-y-1 mt-1">
-                    <li>XOR 是 1 字节十六进制（00-FF）。</li>
-                    <li>AES 仅在部分图片（V4-V2）解密时需要；输入任意 16 个字符即可（会自动截取前 16 位）。</li>
-                  </ul>
+                <div>
+                  <label class="block text-sm font-medium text-[#000000e6] mb-2">AES（可选）</label>
+                  <input
+                    v-model="manualKeys.aes_key"
+                    type="text"
+                    placeholder="16 个字符（V4-V2 需要）"
+                    class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
+                  />
+                  <p v-if="manualKeyErrors.aes_key" class="text-xs text-red-500 mt-1">{{ manualKeyErrors.aes_key }}</p>
                 </div>
               </div>
-            </details>
+
+              <div class="flex flex-wrap gap-3 mt-4">
+                <button
+                  type="button"
+                  @click="applyManualKeys({ save: true })"
+                  :disabled="manualSaving"
+                  class="inline-flex items-center px-4 py-2 bg-[#10AEEF] text-white rounded-lg font-medium hover:bg-[#0D9BD9] transition-all duration-200 disabled:opacity-50"
+                >
+                  {{ manualSaving ? '保存中...' : '保存' }}
+                </button>
+                <button
+                  type="button"
+                  @click="clearManualKeys"
+                  class="inline-flex items-center px-4 py-2 bg-white text-[#7F7F7F] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
+                >
+                  清空
+                </button>
+              </div>
+
+              <p v-if="mediaKeys.message" class="text-xs text-[#7F7F7F] mt-3">{{ mediaKeys.message }}</p>
+            </div>
           </div>
 
           <!-- 操作按钮 -->
           <div class="flex gap-3 justify-center pt-4 border-t border-[#EDEDED]">
             <button
-              @click="fetchMediaKeys(false)"
-              :disabled="mediaLoading"
-              class="inline-flex items-center px-6 py-3 bg-[#10AEEF] text-white rounded-lg font-medium hover:bg-[#0D9BD9] transition-all duration-200 disabled:opacity-50"
-            >
-              <svg v-if="mediaLoading" class="w-5 h-5 mr-2 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-              </svg>
-              <svg v-else class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-              </svg>
-              {{ mediaLoading ? '获取中...' : '获取密钥' }}
-            </button>
-            <button
-              @click="fetchMediaKeys(true)"
-              :disabled="mediaLoading"
-              class="inline-flex items-center px-6 py-3 bg-white text-[#10AEEF] border border-[#10AEEF] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200 disabled:opacity-50"
-            >
-              强制重新提取
-            </button>
-            <button
-              @click="goToStep(2)"
+              @click="goToMediaDecryptStep"
               class="inline-flex items-center px-6 py-3 bg-[#07C160] text-white rounded-lg font-medium hover:bg-[#06AD56] transition-all duration-200"
             >
               下一步
@@ -403,7 +315,7 @@
                 <p class="mb-2">可能的失败原因：</p>
                 <ul class="list-disc list-inside space-y-1">
                   <li><strong>解密后非有效图片</strong>：文件不是图片格式(如视频缩略图损坏)</li>
-                  <li><strong>V4-V2版本需要AES密钥</strong>：需要微信运行，且部分环境需以管理员身份运行后端才能提取；可尝试打开朋友圈图片并点开大图 2-3 次后再提取</li>
+                  <li><strong>V4-V2版本需要AES密钥</strong>：请使用 wx_key 获取 AES 密钥后再重试解密</li>
                   <li><strong>未知加密版本</strong>：新版微信使用了不支持的加密方式</li>
                   <li><strong>文件为空</strong>：原始文件损坏或为空文件</li>
                 </ul>
@@ -482,16 +394,17 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useApi } from '~/composables/useApi'
 
-const { decryptDatabase, getMediaKeys, decryptAllMedia, saveMediaKeys } = useApi()
+const { decryptDatabase, saveMediaKeys } = useApi()
 
 const loading = ref(false)
 const error = ref('')
 const currentStep = ref(0)
+const mediaAccount = ref('')
 
 // 步骤定义
 const steps = [
   { title: '数据库解密' },
-  { title: '图片密钥' },
+  { title: '填写图片密钥' },
   { title: '图片解密' }
 ]
 
@@ -513,11 +426,8 @@ const mediaKeys = reactive({
   aes_key: '',
   message: ''
 })
-const mediaLoading = ref(false)
-const copyMessage = ref('')
-let copyMessageTimer = null
 
-// 手动输入密钥（自动获取失败时使用）
+// 手动输入密钥（从 wx_key 获取）
 const manualKeys = reactive({
   xor_key: '',
   aes_key: ''
@@ -550,36 +460,39 @@ const applyManualKeys = async (options = { save: false }) => {
   manualKeyErrors.aes_key = ''
   error.value = ''
 
-  const xor = normalizeXorKey(manualKeys.xor_key)
-  if (!xor.ok) {
-    manualKeyErrors.xor_key = xor.message
-    return
-  }
-
   const aes = normalizeAesKey(manualKeys.aes_key)
   if (!aes.ok) {
     manualKeyErrors.aes_key = aes.message
     return
   }
 
-  mediaKeys.xor_key = xor.value
-  mediaKeys.aes_key = aes.value
-  mediaKeys.message = options?.save ? '已保存并使用手动密钥' : '已使用手动密钥（仅本次）'
+  const hasXor = !!String(manualKeys.xor_key || '').trim()
+  if (options?.save || hasXor) {
+    const xor = normalizeXorKey(manualKeys.xor_key)
+    if (!xor.ok) {
+      manualKeyErrors.xor_key = xor.message
+      return
+    }
+    mediaKeys.xor_key = xor.value
+  }
+
+  if (aes.value) {
+    mediaKeys.aes_key = aes.value
+  }
+
+  mediaKeys.message = options?.save ? '已保存' : '已应用'
 
   if (!options?.save) return
-  if (!aes.value) {
-    mediaKeys.message = '已使用手动密钥（未保存：AES 为空）'
-    return
-  }
 
   try {
     manualSaving.value = true
     await saveMediaKeys({
-      xor_key: xor.value,
-      aes_key: aes.value
+      account: mediaAccount.value || null,
+      xor_key: mediaKeys.xor_key,
+      aes_key: aes.value || null
     })
   } catch (e) {
-    mediaKeys.message = '已使用手动密钥（保存失败，可继续解密）'
+    mediaKeys.message = '保存失败（可继续解密）'
   } finally {
     manualSaving.value = false
   }
@@ -590,6 +503,9 @@ const clearManualKeys = () => {
   manualKeys.aes_key = ''
   manualKeyErrors.xor_key = ''
   manualKeyErrors.aes_key = ''
+  mediaKeys.xor_key = ''
+  mediaKeys.aes_key = ''
+  mediaKeys.message = ''
 }
 
 // 图片解密相关
@@ -665,10 +581,18 @@ const handleDecrypt = async () => {
       if (process.client && typeof window !== 'undefined') {
         sessionStorage.setItem('decryptResult', JSON.stringify(result))
       }
-      // 进入图片密钥获取步骤
+      // 记录当前账号（用于图片解密/密钥保存）
+      try {
+        const accounts = Object.keys(result.account_results || {})
+        if (accounts.length > 0) mediaAccount.value = accounts[0]
+      } catch (e) {
+        // ignore
+      }
+
+      // 进入图片密钥填写步骤
+      clearManualKeys()
       currentStep.value = 1
-      // 自动尝试获取图片密钥
-      fetchMediaKeys(false)
+      mediaKeys.message = ''
     } else if (result.status === 'failed') {
       if (result.failure_count > 0 && result.success_count === 0) {
         error.value = result.message || '所有文件解密失败'
@@ -683,75 +607,6 @@ const handleDecrypt = async () => {
   } finally {
     loading.value = false
   }
-}
-
-// 获取图片密钥
-const fetchMediaKeys = async (forceExtract = false) => {
-  mediaLoading.value = true
-  error.value = ''
-  
-  try {
-    const result = await getMediaKeys({ force_extract: forceExtract })
-    
-    if (result.status === 'success') {
-      mediaKeys.xor_key = result.xor_key || ''
-      mediaKeys.aes_key = result.aes_key || ''
-      mediaKeys.message = result.message || ''
-    } else {
-      error.value = result.message || '获取密钥失败'
-    }
-  } catch (err) {
-    error.value = err.message || '获取密钥过程中发生错误'
-  } finally {
-    mediaLoading.value = false
-  }
-}
-
-const _copyToClipboard = async (text) => {
-  if (!process.client || typeof window === 'undefined') return false
-  if (!text) return false
-
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch (e) {
-    // Ignore and fallback below
-  }
-
-  try {
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.setAttribute('readonly', '')
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    textarea.style.left = '-9999px'
-    textarea.style.top = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
-    textarea.setSelectionRange(0, textarea.value.length)
-    const ok = document.execCommand('copy')
-    document.body.removeChild(textarea)
-    return ok
-  } catch (e) {
-    return false
-  }
-}
-
-const _setCopyMessage = (message) => {
-  copyMessage.value = message
-  if (copyMessageTimer) clearTimeout(copyMessageTimer)
-  copyMessageTimer = setTimeout(() => {
-    copyMessage.value = ''
-    copyMessageTimer = null
-  }, 2000)
-}
-
-const copyKey = async (label, value) => {
-  if (!value) return
-  const ok = await _copyToClipboard(value)
-  _setCopyMessage(ok ? `${label}已复制` : `${label}复制失败，请手动复制`)
 }
 
 // 批量解密所有图片（使用SSE实时进度）
@@ -773,6 +628,7 @@ const decryptAllImages = async () => {
   try {
     // 构建SSE URL
     const params = new URLSearchParams()
+    if (mediaAccount.value) params.set('account', mediaAccount.value)
     if (mediaKeys.xor_key) params.set('xor_key', mediaKeys.xor_key)
     if (mediaKeys.aes_key) params.set('aes_key', mediaKeys.aes_key)
     const url = `http://localhost:8000/api/media/decrypt_all_stream?${params.toString()}`
@@ -830,10 +686,15 @@ const decryptAllImages = async () => {
   }
 }
 
-// 跳转到指定步骤
-const goToStep = (step) => {
-  currentStep.value = step
+// 从密钥步骤进入图片解密步骤
+const goToMediaDecryptStep = async () => {
   error.value = ''
+  // 用户填写了任一项时，尝试校验并应用（未填写则允许直接进入，后端会使用已保存密钥或报错提示）
+  if (manualKeys.xor_key || manualKeys.aes_key) {
+    await applyManualKeys({ save: false })
+    if (manualKeyErrors.xor_key || manualKeyErrors.aes_key) return
+  }
+  currentStep.value = 2
 }
 
 // 跳过图片解密，直接查看聊天记录
@@ -851,6 +712,9 @@ onMounted(() => {
         // 填充数据路径
         if (account.data_dir) {
           formData.db_storage_path = account.data_dir + '\\db_storage'
+        }
+        if (account.account_name) {
+          mediaAccount.value = account.account_name
         }
         // 清除sessionStorage
         sessionStorage.removeItem('selectedAccount')

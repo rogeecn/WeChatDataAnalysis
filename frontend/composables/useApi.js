@@ -84,6 +84,70 @@ export const useApi = () => {
     return await request(url)
   }
 
+  const searchChatMessages = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.q) query.set('q', params.q)
+    if (params && params.username) query.set('username', params.username)
+    if (params && params.sender) query.set('sender', params.sender)
+    if (params && params.session_type) query.set('session_type', params.session_type)
+    if (params && params.limit != null) query.set('limit', String(params.limit))
+    if (params && params.offset != null) query.set('offset', String(params.offset))
+    if (params && params.start_time != null) query.set('start_time', String(params.start_time))
+    if (params && params.end_time != null) query.set('end_time', String(params.end_time))
+    if (params && params.render_types) query.set('render_types', params.render_types)
+    if (params && params.include_hidden != null) query.set('include_hidden', String(!!params.include_hidden))
+    if (params && params.include_official != null) query.set('include_official', String(!!params.include_official))
+    if (params && params.session_limit != null) query.set('session_limit', String(params.session_limit))
+    if (params && params.per_chat_scan != null) query.set('per_chat_scan', String(params.per_chat_scan))
+    if (params && params.scan_limit != null) query.set('scan_limit', String(params.scan_limit))
+    const url = '/chat/search' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url)
+  }
+
+  const listChatSearchSenders = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.username) query.set('username', params.username)
+    if (params && params.session_type) query.set('session_type', params.session_type)
+    if (params && params.limit != null) query.set('limit', String(params.limit))
+    if (params && params.q) query.set('q', params.q)
+    if (params && params.message_q) query.set('message_q', params.message_q)
+    if (params && params.start_time != null) query.set('start_time', String(params.start_time))
+    if (params && params.end_time != null) query.set('end_time', String(params.end_time))
+    if (params && params.render_types) query.set('render_types', params.render_types)
+    if (params && params.include_hidden != null) query.set('include_hidden', String(!!params.include_hidden))
+    if (params && params.include_official != null) query.set('include_official', String(!!params.include_official))
+    const url = '/chat/search-index/senders' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url)
+  }
+
+  const getChatSearchIndexStatus = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    const url = '/chat/search-index/status' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url)
+  }
+
+  const buildChatSearchIndex = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.rebuild != null) query.set('rebuild', String(!!params.rebuild))
+    const url = '/chat/search-index/build' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url, { method: 'POST' })
+  }
+
+  const getChatMessagesAround = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.username) query.set('username', params.username)
+    if (params && params.anchor_id) query.set('anchor_id', params.anchor_id)
+    if (params && params.before != null) query.set('before', String(params.before))
+    if (params && params.after != null) query.set('after', String(params.after))
+    const url = '/chat/messages/around' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url)
+  }
+
   const openChatMediaFolder = async (params = {}) => {
     const query = new URLSearchParams()
     if (params && params.account) query.set('account', params.account)
@@ -108,23 +172,16 @@ export const useApi = () => {
     })
   }
 
-  // 获取图片解密密钥
-  const getMediaKeys = async (params = {}) => {
-    const query = new URLSearchParams()
-    if (params && params.account) query.set('account', params.account)
-    if (params && params.force_extract) query.set('force_extract', 'true')
-    const url = '/media/keys' + (query.toString() ? `?${query.toString()}` : '')
-    return await request(url)
-  }
-
   // 保存图片解密密钥
   const saveMediaKeys = async (params = {}) => {
-    const query = new URLSearchParams()
-    if (params && params.account) query.set('account', params.account)
-    if (params && params.xor_key) query.set('xor_key', params.xor_key)
-    if (params && params.aes_key) query.set('aes_key', params.aes_key)
-    const url = '/media/keys' + (query.toString() ? `?${query.toString()}` : '')
-    return await request(url, { method: 'POST', body: { account: params.account, force_extract: false } })
+    return await request('/media/keys', {
+      method: 'POST',
+      body: {
+        account: params.account || null,
+        xor_key: params.xor_key || '',
+        aes_key: params.aes_key || null
+      }
+    })
   }
 
   // 批量解密所有图片
@@ -183,9 +240,13 @@ export const useApi = () => {
     listChatAccounts,
     listChatSessions,
     listChatMessages,
+    searchChatMessages,
+    getChatSearchIndexStatus,
+    buildChatSearchIndex,
+    listChatSearchSenders,
+    getChatMessagesAround,
     openChatMediaFolder,
     downloadChatEmoji,
-    getMediaKeys,
     saveMediaKeys,
     decryptAllMedia,
     createChatExport,

@@ -33,28 +33,37 @@
       <!-- 聊天列表 -->
       <div class="h-full flex flex-col min-h-0">
         <!-- 搜索栏 -->
-        <div class="h-16 p-4 border-b border-gray-200" style="background-color: #F7F7F7">
-          <div class="flex items-center space-x-2">
-            <div class="relative flex-1">
-              <input
-                type="text"
-                placeholder="搜索"
-                v-model="searchQuery"
-                class="w-full pl-8 pr-4 py-2 text-sm focus:outline-none rounded-md"
-                style="background-color: #EAEAEA; border: none;"
-              >
-              <svg class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 16 16">
+        <div class="p-3 border-b border-gray-200" style="background-color: #F7F7F7">
+          <div class="flex items-center gap-2">
+            <div class="contact-search-wrapper flex-1">
+              <svg class="contact-search-icon" fill="none" stroke="currentColor" viewBox="0 0 16 16">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7.33333 12.6667C10.2789 12.6667 12.6667 10.2789 12.6667 7.33333C12.6667 4.38781 10.2789 2 7.33333 2C4.38781 2 2 4.38781 2 7.33333C2 10.2789 4.38781 12.6667 7.33333 12.6667Z" />
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M14 14L11.1 11.1" />
               </svg>
+              <input
+                type="text"
+                placeholder="搜索联系人"
+                v-model="searchQuery"
+                class="contact-search-input"
+                :class="{ 'privacy-blur': privacyMode }"
+              >
+              <button
+                v-if="searchQuery"
+                type="button"
+                class="contact-search-clear"
+                @click="searchQuery = ''"
+              >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
             </div>
 
             <select
               v-if="availableAccounts.length > 1"
               v-model="selectedAccount"
               @change="onAccountChange"
-              class="text-xs px-2 py-2 rounded-md border border-gray-200 focus:outline-none"
-              style="background-color: #EAEAEA;"
+              class="account-select"
             >
               <option v-for="acc in availableAccounts" :key="acc" :value="acc">{{ acc }}</option>
             </select>
@@ -63,8 +72,14 @@
 
         <!-- 联系人列表 -->
         <div class="flex-1 overflow-y-auto min-h-0">
-          <div v-if="isLoadingContacts" class="px-3 py-2 text-sm text-gray-500">
-            加载中...
+          <div v-if="isLoadingContacts" class="px-3 py-4 h-full overflow-hidden">
+            <div v-for="i in 15" :key="i" class="flex items-center space-x-3 py-2">
+              <div class="w-10 h-10 rounded-md bg-gray-200 skeleton-pulse"></div>
+              <div class="flex-1 space-y-2">
+                <div class="h-3.5 bg-gray-200 rounded skeleton-pulse" :style="{ width: (60 + (i % 4) * 15) + 'px' }"></div>
+                <div class="h-3 bg-gray-200 rounded skeleton-pulse" :style="{ width: (80 + (i % 3) * 20) + 'px' }"></div>
+              </div>
+            </div>
           </div>
           <div v-else-if="contactsError" class="px-3 py-2 text-sm text-red-500 whitespace-pre-wrap">
             {{ contactsError }}
@@ -112,32 +127,75 @@
     </div>
 
     <!-- 右侧聊天区域 -->
-    <div class="flex-1 flex flex-col min-h-0" style="background-color: #EDEDED">
-      <div v-if="selectedContact" class="flex-1 flex flex-col min-h-0">
-        <!-- 聊天头部 -->
-        <div class="h-16 px-6 flex items-center" style="background-color: #EDEDED; border-bottom: 1px solid #d5d5d5;">
-          <div class="flex items-center space-x-3">
-            <h2 class="text-lg font-medium text-gray-900" :class="{ 'privacy-blur': privacyMode }">
-              {{ selectedContact ? selectedContact.name : '' }}
-            </h2>
+    <div class="flex-1 flex min-h-0" style="background-color: #EDEDED">
+      <!-- 聊天主区域 -->
+      <div class="flex-1 flex flex-col min-h-0 min-w-0">
+        <div v-if="selectedContact" class="flex-1 flex flex-col min-h-0 relative">
+          <!-- 聊天头部 -->
+          <div class="chat-header">
+            <div class="flex items-center gap-3">
+              <h2 class="text-base font-medium text-gray-900" :class="{ 'privacy-blur': privacyMode }">
+                {{ selectedContact ? selectedContact.name : '' }}
+              </h2>
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+              <button
+                class="header-btn"
+                @click="refreshSelectedMessages"
+                :disabled="isLoadingMessages"
+                title="刷新消息"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span>刷新</span>
+              </button>
+              <button
+                class="header-btn"
+                @click="openExportModal"
+                :disabled="isExportCreating"
+                title="导出聊天记录"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+                <span>导出</span>
+              </button>
+              <button
+                class="header-btn-icon"
+                :class="{ 'header-btn-icon-active': messageSearchOpen }"
+                @click="toggleMessageSearch"
+                :title="messageSearchOpen ? '关闭搜索 (Esc)' : '搜索聊天记录 (Ctrl+F)'"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 16 16">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7.33333 12.6667C10.2789 12.6667 12.6667 10.2789 12.6667 7.33333C12.6667 4.38781 10.2789 2 7.33333 2C4.38781 2 2 4.38781 2 7.33333C2 10.2789 4.38781 12.6667 7.33333 12.6667Z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M14 14L11.1 11.1" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <div class="ml-auto flex items-center space-x-2">
-            <button
-              class="text-xs px-3 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
-              @click="refreshSelectedMessages"
-              :disabled="isLoadingMessages"
-            >
-              刷新
-            </button>
-            <button
-              class="text-xs px-3 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
-              @click="openExportModal"
-              :disabled="isExportCreating"
-            >
-              导出
-            </button>
+
+          <div v-if="searchContext.active" class="px-6 py-2 border-b border-emerald-200 bg-emerald-50 flex items-center gap-3">
+            <div class="text-sm text-emerald-900">
+              已定位到搜索结果（上下文模式）
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                class="text-xs px-3 py-1 rounded-md bg-white border border-emerald-200 hover:bg-emerald-100"
+                @click="exitSearchContext"
+              >
+                退出定位
+              </button>
+              <button
+                type="button"
+                class="text-xs px-3 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
+                @click="refreshSelectedMessages"
+              >
+                返回最新
+              </button>
+            </div>
           </div>
-        </div>
 
         <!-- 聊天消息区域 -->
         <div ref="messageContainerRef" class="flex-1 overflow-y-auto p-4 min-h-0" @scroll="onMessageScroll">
@@ -161,7 +219,17 @@
             暂无聊天记录
           </div>
 
-          <div v-for="message in renderMessages" :key="message.id" class="mb-6">
+          <div
+            v-for="message in renderMessages"
+            :key="message.id"
+            class="mb-6"
+            :class="[
+              (highlightServerIdStr && message.serverIdStr && highlightServerIdStr === message.serverIdStr) ? 'message-locate-highlight' : '',
+              (highlightMessageId === message.id) ? 'bg-emerald-100/50 rounded-md px-2 py-1 -mx-2' : ''
+            ]"
+            :data-server-id="message.serverIdStr || ''"
+            :data-msg-id="message.id"
+          >
             <div v-if="message.showTimeDivider" class="flex justify-center mb-4">
               <div class="px-3 py-1 text-xs text-[#9e9e9e]">
                 {{ message.timeDivider }}
@@ -188,7 +256,11 @@
                 </div>
                 
                 <!-- 消息内容气泡（精简：移除了专用消息组件） -->
-                <div class="flex flex-col relative group" :class="[message.isSent ? 'items-end' : 'items-start', { 'privacy-blur': privacyMode }]">
+                <div
+                  class="flex flex-col relative group"
+                  :class="[message.isSent ? 'items-end' : 'items-start', { 'privacy-blur': privacyMode }]"
+                  @contextmenu="openMediaContextMenu($event, message, 'message')"
+                >
                   <div v-if="message.isGroup && !message.isSent && message.senderDisplayName" class="text-[11px] text-gray-500 mb-1" :class="message.isSent ? 'text-right' : 'text-left'">
                     {{ message.senderDisplayName }}
                   </div>
@@ -324,7 +396,39 @@
                     <div
                       v-if="message.quoteTitle || message.quoteContent"
                       class="mt-[5px] px-2 text-xs text-neutral-600 rounded max-w-[404px] max-h-[61px] flex items-center bg-[#e1e1e1]">
-                      <div class="line-clamp-2 py-2">{{ message.quoteTitle }}: {{ message.quoteContent }}</div>
+                      <div class="py-2 min-w-0 w-full">
+                        <div v-if="isQuotedVoice(message)" class="flex items-center gap-1 min-w-0">
+                          <span v-if="message.quoteTitle" class="truncate flex-shrink-0">{{ message.quoteTitle }}:</span>
+                          <button
+                            type="button"
+                            class="flex items-center gap-1 min-w-0 hover:opacity-80"
+                            :disabled="!message.quoteVoiceUrl"
+                            :class="!message.quoteVoiceUrl ? 'opacity-60 cursor-not-allowed' : ''"
+                            @click.stop="message.quoteVoiceUrl && playQuoteVoice(message)"
+                          >
+                            <svg
+                              class="wechat-voice-icon wechat-quote-voice-icon"
+                              :class="{ 'voice-playing': playingVoiceId === getQuoteVoiceId(message) }"
+                              viewBox="0 0 32 32"
+                              fill="currentColor"
+                            >
+                              <path d="M10.24 11.616l-4.224 4.192 4.224 4.192c1.088-1.056 1.76-2.56 1.76-4.192s-0.672-3.136-1.76-4.192z"></path>
+                              <path class="voice-wave-2" d="M15.199 6.721l-1.791 1.76c1.856 1.888 3.008 4.48 3.008 7.328s-1.152 5.44-3.008 7.328l1.791 1.76c2.336-2.304 3.809-5.536 3.809-9.088s-1.473-6.784-3.809-9.088z"></path>
+                              <path class="voice-wave-3" d="M20.129 1.793l-1.762 1.76c3.104 3.168 5.025 7.488 5.025 12.256s-1.921 9.088-5.025 12.256l1.762 1.76c3.648-3.616 5.887-8.544 5.887-14.016s-2.239-10.432-5.887-14.016z"></path>
+                            </svg>
+                            <span v-if="getVoiceDurationInSeconds(message.quoteVoiceLength) > 0" class="flex-shrink-0">{{ getVoiceDurationInSeconds(message.quoteVoiceLength) }}"</span>
+                            <span v-else class="flex-shrink-0">语音</span>
+                          </button>
+                          <audio
+                            v-if="message.quoteVoiceUrl"
+                            :ref="el => setVoiceRef(getQuoteVoiceId(message), el)"
+                            :src="message.quoteVoiceUrl"
+                            preload="none"
+                            class="hidden"
+                          ></audio>
+                        </div>
+                        <div v-else class="line-clamp-2">{{ message.quoteTitle ? (message.quoteTitle + ': ') : '' }}{{ message.quoteContent }}</div>
+                      </div>
                     </div>
                   </template>
                   <div v-else-if="message.renderType === 'transfer'"
@@ -379,23 +483,424 @@
             </div>
           </div>
         </div>
+
+        <button
+          v-if="showJumpToBottom"
+          type="button"
+          class="absolute bottom-6 right-6 z-20 w-10 h-10 rounded-full bg-white/90 border border-gray-200 shadow hover:bg-white flex items-center justify-center"
+          title="回到最新"
+          @click="scrollToBottom"
+        >
+          <svg class="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
       </div>
-      
+
       <!-- 未选择联系人时的提示 -->
       <div v-else class="flex-1 flex items-center justify-center">
-        <div class="text-center text-gray-500">
-          <div class="w-24 h-24 mx-auto mb-4 text-gray-300">
-            <svg fill="currentColor" viewBox="0 0 20 20">
-              <path d="M18 13V5a2 2 0 00-2-2H4a2 2 0 00-2 2v8a2 2 0 002 2h3l3 3 3-3h3a2 2 0 002-2zM5 7v14l11-7z"/>
+        <div class="text-center">
+          <div class="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-[#03C160]/10 to-[#03C160]/5 flex items-center justify-center">
+            <svg class="w-10 h-10 text-[#03C160]/60" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 19.8C17.52 19.8 22 15.99 22 11.3C22 6.6 17.52 2.8 12 2.8C6.48 2.8 2 6.6 2 11.3C2 13.29 2.8 15.12 4.15 16.57C4.6 17.05 4.82 17.29 4.92 17.44C5.14 17.79 5.21 17.99 5.23 18.4C5.24 18.59 5.22 18.81 5.16 19.26C5.1 19.75 5.07 19.99 5.13 20.16C5.23 20.49 5.53 20.71 5.87 20.72C6.04 20.72 6.27 20.63 6.72 20.43L8.07 19.86C8.43 19.71 8.61 19.63 8.77 19.59C8.95 19.55 9.04 19.54 9.22 19.54C9.39 19.53 9.64 19.57 10.14 19.65C10.74 19.75 11.37 19.8 12 19.8Z"/>
             </svg>
           </div>
-          <h3 class="text-lg font-medium text-gray-700 mb-2">微信聊天记录查看器</h3>
-          <p class="text-gray-500">
-            请选择一个联系人查看聊天记录
+          <h3 class="text-base font-medium text-gray-700 mb-1.5">选择一个会话</h3>
+          <p class="text-sm text-gray-400">
+            从左侧列表选择联系人查看聊天记录
           </p>
         </div>
       </div>
     </div>
+
+    <!-- 右侧搜索侧边栏 -->
+    <transition name="sidebar-slide">
+      <div v-if="messageSearchOpen" class="search-sidebar">
+          <!-- 侧边栏头部 -->
+          <div class="search-sidebar-header">
+            <div class="search-sidebar-title">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              </svg>
+              <span>搜索聊天记录</span>
+            </div>
+            <button
+              type="button"
+              class="search-sidebar-close"
+              @click="closeMessageSearch"
+              title="关闭搜索 (Esc)"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- 搜索输入区域（整合所有筛选条件） -->
+          <div class="search-sidebar-input-section">
+            <!-- 第一行：范围 + 输入框 + 搜索按钮 -->
+            <div class="search-input-combined" :class="{ 'search-input-combined-focused': searchInputFocused }">
+              <!-- 左侧：范围切换 -->
+              <div class="search-scope-inline">
+                <button
+                  type="button"
+                  class="scope-inline-btn"
+                  :class="{ 'scope-inline-btn-active': messageSearchScope === 'conversation' }"
+                  :disabled="!selectedContact"
+                  @click="messageSearchScope = 'conversation'"
+                  title="当前会话"
+                >
+                  当前
+                </button>
+                <span class="scope-inline-divider">/</span>
+                <button
+                  type="button"
+                  class="scope-inline-btn"
+                  :class="{ 'scope-inline-btn-active': messageSearchScope === 'global' }"
+                  @click="messageSearchScope = 'global'"
+                  title="全部会话"
+                >
+                  全部
+                </button>
+              </div>
+
+              <!-- 中间：搜索输入框 -->
+              <input
+                ref="messageSearchInputRef"
+                v-model="messageSearchQuery"
+                type="text"
+                placeholder="输入关键词..."
+                class="search-input-inline"
+                :class="{ 'privacy-blur': privacyMode }"
+                @focus="searchInputFocused = true"
+                @blur="searchInputFocused = false"
+                @keydown.enter.exact.prevent="runMessageSearch({ reset: true })"
+                @keydown.enter.shift.prevent="onSearchPrev"
+                @keydown.escape="closeMessageSearch"
+              />
+
+              <!-- 清除按钮 -->
+                <button
+                  v-if="messageSearchQuery"
+                  type="button"
+                  class="search-clear-inline"
+                  @click="messageSearchQuery = ''; runMessageSearch({ reset: true })"
+                >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+
+              <!-- 搜索按钮 -->
+              <button
+                type="button"
+                class="search-btn-inline"
+                :disabled="messageSearchLoading"
+                @click="runMessageSearch({ reset: true })"
+              >
+                <svg v-if="messageSearchLoading" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- 第二行：筛选条件 -->
+            <div class="search-filters-row">
+              <!-- 时间范围 -->
+              <select
+                v-model="messageSearchRangeDays"
+                class="search-filter-select search-filter-select-time"
+                title="时间范围"
+              >
+                <option value="">不限时间</option>
+                <option value="1">今天</option>
+                <option value="3">最近3天</option>
+                <option value="7">最近7天</option>
+                <option value="30">最近30天</option>
+                <option value="90">最近3个月</option>
+                <option value="180">最近半年</option>
+                <option value="365">最近1年</option>
+                <option value="custom">自定义...</option>
+              </select>
+
+              <!-- 发送者筛选 -->
+              <div ref="messageSearchSenderDropdownRef" class="relative flex-1">
+                <button
+                  type="button"
+                  class="search-filter-select w-full flex items-center justify-between gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                  title="按发送者筛选"
+                  :disabled="messageSearchSenderDisabled"
+                  @click="toggleMessageSearchSenderDropdown"
+                >
+                    <span class="flex items-center gap-1 min-w-0">
+                      <span class="w-4 h-4 rounded overflow-hidden bg-gray-200 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
+                        <img
+                          v-if="messageSearchSelectedSenderInfo?.avatar"
+                          :src="messageSearchSelectedSenderInfo.avatar"
+                          alt=""
+                          class="w-full h-full object-cover"
+                        />
+                        <span v-else class="w-full h-full flex items-center justify-center text-[9px] text-gray-500">
+                          {{ messageSearchSelectedSenderInitial }}
+                        </span>
+                      </span>
+                      <span class="truncate" :class="{ 'privacy-blur': privacyMode }">{{ messageSearchSenderLabel }}</span>
+                    </span>
+                    <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                    </svg>
+                  </button>
+
+                <div
+                  v-if="messageSearchSenderDropdownOpen"
+                  class="absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-50 overflow-hidden"
+                >
+                  <div class="p-2 border-b border-gray-100">
+                    <input
+                      ref="messageSearchSenderDropdownInputRef"
+                      v-model="messageSearchSenderDropdownQuery"
+                      type="text"
+                      placeholder="搜索发送者"
+                      class="w-full text-xs px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-md outline-none focus:border-[#03C160] focus:ring-1 focus:ring-[#03C160]/20"
+                      :class="{ 'privacy-blur': privacyMode }"
+                    />
+                  </div>
+
+                  <div class="max-h-64 overflow-y-auto">
+                    <button
+                      type="button"
+                      class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-gray-50"
+                      :class="!messageSearchSender ? 'bg-gray-50' : ''"
+                      @click="selectMessageSearchSender('')"
+                    >
+                      <span class="w-6 h-6 rounded-md overflow-hidden bg-gray-200 flex-shrink-0 flex items-center justify-center text-[10px] text-gray-500">
+                        全
+                      </span>
+                      <span class="truncate">不限发送者</span>
+                    </button>
+
+                    <div v-if="messageSearchSenderLoading" class="px-2 py-3 text-xs text-gray-500">
+                      加载中...
+                    </div>
+                    <div v-else-if="messageSearchSenderError" class="px-2 py-3 text-xs text-red-500 whitespace-pre-wrap">
+                      {{ messageSearchSenderError }}
+                    </div>
+                    <div v-else-if="filteredMessageSearchSenderOptions.length === 0" class="px-2 py-3 text-xs text-gray-500">
+                      {{ messageSearchScope === 'global' && String(messageSearchQuery || '').trim().length < 2 ? '请输入关键词后再筛选发送者' : '暂无发送者' }}
+                    </div>
+                    <template v-else>
+                      <button
+                        v-for="s in filteredMessageSearchSenderOptions"
+                        :key="s.username"
+                        type="button"
+                        class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-gray-50"
+                        :class="messageSearchSender === s.username ? 'bg-gray-50' : ''"
+                        @click="selectMessageSearchSender(s.username)"
+                      >
+                        <div class="w-6 h-6 rounded-md overflow-hidden bg-gray-300 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
+                          <img v-if="s.avatar" :src="s.avatar" :alt="(s.displayName || s.username) + '头像'" class="w-full h-full object-cover" />
+                          <div v-else class="w-full h-full flex items-center justify-center text-white text-[10px] font-bold" style="background-color: #6B7280">
+                            {{ String(s.displayName || s.username || '').charAt(0) }}
+                          </div>
+                        </div>
+                        <div class="min-w-0 flex-1" :class="{ 'privacy-blur': privacyMode }">
+                          <div class="truncate text-gray-800">{{ s.displayName || s.username }}</div>
+                          <div class="truncate text-[10px] text-gray-400">{{ s.username }}</div>
+                        </div>
+                        <div class="text-[10px] text-gray-400 flex-shrink-0">{{ formatCount(s.count) }}</div>
+                      </button>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 会话类型（仅全局搜索） -->
+            <div v-if="messageSearchScope === 'global'" class="search-session-type-row">
+              <button
+                type="button"
+                class="search-session-type-btn"
+                :class="{ 'search-session-type-btn-active': !String(messageSearchSessionType || '').trim() }"
+                @click="messageSearchSessionType = ''"
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                class="search-session-type-btn"
+                :class="{ 'search-session-type-btn-active': String(messageSearchSessionType || '') === 'group' }"
+                @click="messageSearchSessionType = 'group'"
+              >
+                群聊
+              </button>
+              <button
+                type="button"
+                class="search-session-type-btn"
+                :class="{ 'search-session-type-btn-active': String(messageSearchSessionType || '') === 'single' }"
+                @click="messageSearchSessionType = 'single'"
+              >
+                单聊
+              </button>
+            </div>
+
+            <!-- 自定义时间范围（当选择自定义时显示） -->
+            <div v-if="messageSearchRangeDays === 'custom'" class="search-custom-date-row">
+              <input
+                v-model="messageSearchStartDate"
+                type="date"
+                class="search-date-input"
+                title="开始日期"
+              />
+              <span class="search-date-separator">至</span>
+              <input
+                v-model="messageSearchEndDate"
+                type="date"
+                class="search-date-input"
+                title="结束日期"
+              />
+            </div>
+          </div>
+
+          <!-- 搜索历史 -->
+          <div v-if="!messageSearchQuery.trim() && searchHistory.length > 0" class="search-sidebar-history">
+            <div class="sidebar-section-header">
+              <span class="sidebar-section-title">搜索历史</span>
+              <button type="button" class="sidebar-clear-btn" @click="clearSearchHistory">清空</button>
+            </div>
+            <div class="sidebar-history-list">
+              <button
+                v-for="(item, idx) in searchHistory"
+                :key="idx"
+                type="button"
+                class="sidebar-history-item"
+                :class="{ 'privacy-blur': privacyMode }"
+                @click="applySearchHistory(item)"
+              >
+                <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span class="truncate">{{ item }}</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 搜索状态 -->
+          <div class="search-sidebar-status">
+            <div v-if="messageSearchError" class="sidebar-status-error">
+              {{ messageSearchError }}
+            </div>
+            <div v-else-if="messageSearchQuery.trim()" class="sidebar-status-info">
+              <div class="flex items-center justify-between gap-2">
+                <div class="min-w-0">
+                  <template v-if="messageSearchBackendStatus === 'index_building'">
+                    正在建立索引
+                    <span v-if="messageSearchIndexProgressText" class="sidebar-status-detail">（{{ messageSearchIndexProgressText }}）</span>
+                  </template>
+                  <template v-else>
+                    找到 <strong>{{ messageSearchTotal }}</strong> 条结果
+                  </template>
+                </div>
+                <button
+                  type="button"
+                  class="sidebar-index-btn"
+                  :disabled="messageSearchIndexActionDisabled"
+                  @click="onMessageSearchIndexAction"
+                >
+                  {{ messageSearchIndexActionText }}
+                </button>
+              </div>
+              <div v-if="messageSearchBackendStatus !== 'index_building' && messageSearchIndexText" class="sidebar-status-detail mt-0.5">
+                {{ messageSearchIndexText }}
+              </div>
+            </div>
+          </div>
+
+          <!-- 搜索结果列表 -->
+          <div class="search-sidebar-results">
+            <div v-if="messageSearchResults.length" class="sidebar-results-list">
+              <div
+                v-for="(hit, idx) in messageSearchResults"
+                :key="hit.id + ':' + idx"
+                class="sidebar-result-card"
+                :class="{ 'sidebar-result-card-selected': idx === messageSearchSelectedIndex }"
+                @click="onSearchHitClick(hit, idx)"
+              >
+                <div class="sidebar-result-row">
+                  <div class="sidebar-result-avatar" :class="{ 'privacy-blur': privacyMode }">
+                    <img
+                      v-if="getMessageSearchHitAvatarUrl(hit)"
+                      :src="getMessageSearchHitAvatarUrl(hit)"
+                      :alt="getMessageSearchHitAvatarAlt(hit)"
+                      class="w-full h-full object-cover"
+                    />
+                    <div v-else class="sidebar-result-avatar-fallback">
+                      {{ getMessageSearchHitAvatarInitial(hit) }}
+                    </div>
+                  </div>
+                  <div class="sidebar-result-body" :class="{ 'privacy-blur': privacyMode }">
+                    <div class="sidebar-result-header">
+                      <span v-if="messageSearchScope === 'global'" class="sidebar-result-contact">
+                        {{ hit.conversationName || hit.username }}
+                      </span>
+                      <span class="sidebar-result-time">{{ formatMessageFullTime(hit.createTime) }}</span>
+                    </div>
+                    <div class="sidebar-result-sender">
+                      {{ hit.senderDisplayName || hit.senderUsername || (hit.isSent ? '我' : '') }}
+                    </div>
+                    <div class="sidebar-result-content" v-html="highlightKeyword(hit.snippet || hit.content || hit.title || '', messageSearchQuery)"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 加载更多 -->
+              <div v-if="messageSearchHasMore" class="sidebar-load-more">
+                <button
+                  type="button"
+                  class="sidebar-load-more-btn"
+                  :disabled="messageSearchLoading"
+                  @click="loadMoreSearchResults"
+                >
+                  {{ messageSearchLoading ? '加载中...' : '加载更多' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- 索引构建中 -->
+            <div v-else-if="messageSearchQuery.trim() && !messageSearchLoading && !messageSearchError && messageSearchBackendStatus === 'index_building'" class="sidebar-empty-state">
+              <svg class="sidebar-empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <div class="sidebar-empty-text">正在建立搜索索引</div>
+              <div class="sidebar-empty-hint">首次建立索引会花一些时间，完成后会自动开始搜索</div>
+              <div v-if="messageSearchIndexProgressText" class="sidebar-empty-hint mt-1">{{ messageSearchIndexProgressText }}</div>
+            </div>
+
+            <!-- 空状态 -->
+            <div v-else-if="messageSearchQuery.trim() && !messageSearchLoading && !messageSearchError && messageSearchBackendStatus !== 'index_building' && messageSearchTotal === 0" class="sidebar-empty-state">
+              <svg class="sidebar-empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <div class="sidebar-empty-text">未找到相关消息</div>
+              <div class="sidebar-empty-hint">尝试调整关键词或过滤条件</div>
+            </div>
+
+            <!-- 初始提示 -->
+            <div v-else-if="!messageSearchQuery.trim() && !searchHistory.length" class="sidebar-initial-state">
+              <svg class="sidebar-initial-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              </svg>
+              <div class="sidebar-initial-text">输入关键词开始搜索</div>
+              <div class="sidebar-initial-hint">
+                <kbd>Enter</kbd> 下一条 · <kbd>Shift+Enter</kbd> 上一条
+              </div>
+            </div>
+          </div>
+        </div>
+      </transition>
 
     <!-- 图片预览弹窗 (全局固定定位) -->
     <div v-if="previewImageUrl" 
@@ -420,7 +925,30 @@
       <button
         class="block w-full text-left px-3 py-2 hover:bg-gray-100"
         type="button"
+        @click="onCopyMessageTextClick"
+      >
+        复制文本
+      </button>
+      <button
+        class="block w-full text-left px-3 py-2 hover:bg-gray-100"
+        type="button"
+        @click="onCopyMessageJsonClick"
+      >
+        复制消息 JSON
+      </button>
+      <button
+        v-if="contextMenu.message?.renderType === 'quote' && contextMenu.message?.quoteServerId"
+        class="block w-full text-left px-3 py-2 hover:bg-gray-100"
+        type="button"
+        @click="onLocateQuotedMessageClick"
+      >
+        定位引用消息
+      </button>
+      <button
+        class="block w-full text-left px-3 py-2 hover:bg-gray-100"
+        type="button"
         :disabled="contextMenu.disabled"
+        :class="contextMenu.disabled ? 'opacity-50 cursor-not-allowed' : ''"
         @click="onOpenFolderClick"
       >
         打开文件夹
@@ -506,6 +1034,7 @@
                     type="text"
                     placeholder="搜索会话（名称/username）"
                     class="w-full px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                    :class="{ 'privacy-blur': privacyMode }"
                   />
                 </div>
                 <div class="border border-gray-200 rounded-md max-h-56 overflow-y-auto">
@@ -715,10 +1244,11 @@
       </div>
     </div>
   </div>
+  </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineComponent, h } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineComponent, h, toRaw } from 'vue'
 
 definePageMeta({
   key: 'chat'
@@ -794,6 +1324,468 @@ const allMessages = ref({})
 const messagesMeta = ref({})
 const isLoadingMessages = ref(false)
 const messagesError = ref('')
+
+  // 消息搜索（会话内/全局）
+  const messageSearchOpen = ref(false)
+  const messageSearchQuery = ref('')
+  const messageSearchScope = ref('global') // conversation | global
+  const messageSearchRangeDays = ref('') // empty means no time filter
+  const messageSearchSessionType = ref('') // empty means all (global only): group | single
+  const messageSearchSender = ref('') // 发送者筛选
+  const messageSearchSenderOptions = ref([])
+  const messageSearchSenderLoading = ref(false)
+  const messageSearchSenderError = ref('')
+  const messageSearchSenderOptionsKey = ref('')
+  const messageSearchSenderDropdownOpen = ref(false)
+  const messageSearchSenderDropdownRef = ref(null)
+  const messageSearchSenderDropdownInputRef = ref(null)
+  const messageSearchSenderDropdownQuery = ref('')
+  const messageSearchStartDate = ref('') // 自定义开始日期
+  const messageSearchEndDate = ref('') // 自定义结束日期
+  const messageSearchResults = ref([])
+  const messageSearchLoading = ref(false)
+  const messageSearchError = ref('')
+  const messageSearchBackendStatus = ref('')
+  const messageSearchIndexInfo = ref(null)
+  const messageSearchHasMore = ref(false)
+  const messageSearchOffset = ref(0)
+  const messageSearchLimit = 50
+  const messageSearchTotal = ref(0)
+  const messageSearchSelectedIndex = ref(-1)
+  const messageSearchInputRef = ref(null)
+  let messageSearchDebounceTimer = null
+  let messageSearchIndexPollTimer = null
+
+// 搜索UI增强
+const searchInputFocused = ref(false)
+const showAdvancedFilters = ref(false)
+const searchHistory = ref([])
+const SEARCH_HISTORY_KEY = 'wechat_search_history'
+const MAX_SEARCH_HISTORY = 10
+
+// 加载搜索历史
+const loadSearchHistory = () => {
+  if (!process.client) return
+  try {
+    const saved = localStorage.getItem(SEARCH_HISTORY_KEY)
+    if (saved) {
+      searchHistory.value = JSON.parse(saved) || []
+    }
+  } catch (e) {
+    searchHistory.value = []
+  }
+}
+
+// 保存搜索历史
+const saveSearchHistory = (query) => {
+  if (!process.client) return
+  if (!query || !query.trim()) return
+  const q = query.trim()
+  try {
+    let history = [...searchHistory.value]
+    // 移除重复项
+    history = history.filter(item => item !== q)
+    // 添加到开头
+    history.unshift(q)
+    // 限制数量
+    if (history.length > MAX_SEARCH_HISTORY) {
+      history = history.slice(0, MAX_SEARCH_HISTORY)
+    }
+    searchHistory.value = history
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history))
+  } catch (e) {
+    // ignore
+  }
+}
+
+// 清空搜索历史
+const clearSearchHistory = () => {
+  if (!process.client) return
+  searchHistory.value = []
+  try {
+    localStorage.removeItem(SEARCH_HISTORY_KEY)
+  } catch (e) {
+    // ignore
+  }
+}
+
+// 应用搜索历史
+const applySearchHistory = async (query) => {
+  messageSearchQuery.value = query
+  await runMessageSearch({ reset: true })
+}
+
+const messageSearchIndexExists = computed(() => !!messageSearchIndexInfo.value?.exists)
+const messageSearchIndexReady = computed(() => !!messageSearchIndexInfo.value?.ready)
+const messageSearchIndexBuildStatus = computed(() => String(messageSearchIndexInfo.value?.build?.status || ''))
+const messageSearchIndexBuildIndexed = computed(() => Number(messageSearchIndexInfo.value?.build?.indexedMessages || 0))
+const messageSearchIndexMetaCount = computed(() => {
+  const meta = messageSearchIndexInfo.value?.meta || {}
+  const v = meta.message_count ?? meta.messageCount ?? meta.message_count ?? 0
+  return Number(v || 0)
+})
+
+const messageSearchIndexProgressText = computed(() => {
+  if (messageSearchIndexBuildStatus.value !== 'building') return ''
+  const n = Number(messageSearchIndexBuildIndexed.value || 0)
+  return n > 0 ? `已索引 ${n.toLocaleString()} 条` : '准备中...'
+})
+
+const messageSearchIndexText = computed(() => {
+  if (!messageSearchIndexInfo.value) return ''
+  if (!messageSearchIndexExists.value) return '索引未建立'
+  if (messageSearchIndexBuildStatus.value === 'error') return '索引异常'
+  if (!messageSearchIndexReady.value) return '索引未完成，需重建'
+  const n = Number(messageSearchIndexMetaCount.value || 0)
+  return n > 0 ? `索引已就绪（${n.toLocaleString()} 条）` : '索引已就绪'
+})
+
+const messageSearchIndexActionText = computed(() => {
+  if (messageSearchIndexBuildStatus.value === 'building') return '建立中'
+  return messageSearchIndexExists.value ? '重建索引' : '建立索引'
+})
+
+const messageSearchIndexActionDisabled = computed(() => {
+  return messageSearchIndexBuildStatus.value === 'building' || messageSearchLoading.value
+})
+
+const formatCount = (n) => {
+  const v = Number(n || 0)
+  if (!Number.isFinite(v) || v <= 0) return ''
+  try {
+    return v.toLocaleString()
+  } catch {
+    return String(v)
+  }
+}
+
+const messageSearchSenderDisabled = computed(() => {
+  if (!selectedAccount.value) return true
+  const scope = String(messageSearchScope.value || 'conversation')
+  if (scope === 'conversation') {
+    return !selectedContact.value?.username
+  }
+  const q = String(messageSearchQuery.value || '').trim()
+  if (q.length >= 2) return false
+  return !String(messageSearchSender.value || '').trim()
+})
+
+const messageSearchSelectedSenderInfo = computed(() => {
+  const u = String(messageSearchSender.value || '').trim()
+  if (!u) return null
+  const list = Array.isArray(messageSearchSenderOptions.value) ? messageSearchSenderOptions.value : []
+  const found = list.find((s) => String(s?.username || '').trim() === u)
+  if (found) return found
+  return { username: u, displayName: u, avatar: null, count: null }
+})
+
+const messageSearchSelectedSenderInitial = computed(() => {
+  const info = messageSearchSelectedSenderInfo.value
+  if (!info) return '人'
+  const n = String(info.displayName || info.username || '').trim()
+  return n ? n.charAt(0) : '人'
+})
+
+const messageSearchSenderLabel = computed(() => {
+  const cur = String(messageSearchSender.value || '').trim()
+  if (!cur) {
+    if (String(messageSearchScope.value || '') === 'global' && String(messageSearchQuery.value || '').trim().length < 2) {
+      return '发送者'
+    }
+    return '不限发送者'
+  }
+  const info = messageSearchSelectedSenderInfo.value
+  return String(info?.displayName || info?.username || cur)
+})
+
+const filteredMessageSearchSenderOptions = computed(() => {
+  const list = Array.isArray(messageSearchSenderOptions.value) ? messageSearchSenderOptions.value : []
+  const q = String(messageSearchSenderDropdownQuery.value || '').trim().toLowerCase()
+  if (!q) return list
+  return list.filter((s) => {
+    const u = String(s?.username || '').toLowerCase()
+    const n = String(s?.displayName || '').toLowerCase()
+    return u.includes(q) || n.includes(q)
+  })
+})
+
+const closeMessageSearchSenderDropdown = () => {
+  messageSearchSenderDropdownOpen.value = false
+  messageSearchSenderDropdownQuery.value = ''
+}
+
+const getMessageSearchSenderFacetKey = () => {
+  const acc = String(selectedAccount.value || '').trim()
+  if (!acc) return ''
+  const scope = String(messageSearchScope.value || 'conversation')
+  const conv = scope === 'conversation' ? String(selectedContact.value?.username || '') : ''
+  const q = String(messageSearchQuery.value || '').trim()
+  const range = String(messageSearchRangeDays.value || '')
+  const sd = String(messageSearchStartDate.value || '')
+  const ed = String(messageSearchEndDate.value || '')
+  const st = scope === 'global' ? String(messageSearchSessionType.value || '').trim() : ''
+  return [acc, scope, conv, q, range, sd, ed, st].join('|')
+}
+
+const ensureMessageSearchSendersLoaded = async () => {
+  const key = getMessageSearchSenderFacetKey()
+  if (!key) return
+  if (messageSearchSenderOptionsKey.value === key && !messageSearchSenderLoading.value) return
+  const list = await fetchMessageSearchSenders()
+  messageSearchSenderOptionsKey.value = key
+  return list
+}
+
+const toggleMessageSearchSenderDropdown = async () => {
+  if (messageSearchSenderDisabled.value) return
+  if (messageSearchSenderDropdownOpen.value) {
+    closeMessageSearchSenderDropdown()
+    return
+  }
+  messageSearchSenderDropdownOpen.value = true
+  await ensureMessageSearchSendersLoaded()
+  await nextTick()
+  try {
+    messageSearchSenderDropdownInputRef.value?.focus?.()
+  } catch {}
+}
+
+const selectMessageSearchSender = (username) => {
+  messageSearchSender.value = String(username || '')
+  closeMessageSearchSenderDropdown()
+}
+
+const fetchMessageSearchIndexStatus = async () => {
+  if (!selectedAccount.value) return null
+  const api = useApi()
+  try {
+    const resp = await api.getChatSearchIndexStatus({ account: selectedAccount.value })
+    messageSearchIndexInfo.value = resp?.index || null
+    return messageSearchIndexInfo.value
+  } catch (e) {
+    return null
+  }
+}
+
+const fetchMessageSearchSenders = async () => {
+  messageSearchSenderError.value = ''
+  if (!selectedAccount.value) {
+    messageSearchSenderOptions.value = []
+    messageSearchSenderOptionsKey.value = ''
+    return []
+  }
+
+  const scope = String(messageSearchScope.value || 'conversation')
+  const msgQ = String(messageSearchQuery.value || '').trim()
+
+  const params = {
+    account: selectedAccount.value,
+    limit: 200
+  }
+
+  if (scope === 'conversation') {
+    if (!selectedContact.value?.username) {
+      messageSearchSenderOptions.value = []
+      messageSearchSenderOptionsKey.value = ''
+      return []
+    }
+    params.username = selectedContact.value.username
+  } else {
+    if (msgQ.length < 2) {
+      messageSearchSenderOptions.value = []
+      messageSearchSenderOptionsKey.value = ''
+      return []
+    }
+  }
+
+  if (msgQ) {
+    params.message_q = msgQ
+  }
+
+  params.render_types = 'text'
+
+  const range = String(messageSearchRangeDays.value || '')
+  if (range === 'custom') {
+    const start = dateToUnixSeconds(messageSearchStartDate.value, false)
+    const end = dateToUnixSeconds(messageSearchEndDate.value, true)
+    if (start != null) params.start_time = start
+    if (end != null) params.end_time = end
+    if (start != null && end != null && start > end) {
+      messageSearchSenderError.value = '时间范围不合法：开始日期不能晚于结束日期'
+      messageSearchSenderOptions.value = []
+      messageSearchSenderOptionsKey.value = ''
+      return []
+    }
+  } else {
+    const days = Number(range || 0)
+    if (days > 0 && Number.isFinite(days)) {
+      const end = Math.floor(Date.now() / 1000)
+      const start = Math.max(0, end - Math.floor(days * 24 * 3600))
+      params.start_time = start
+      params.end_time = end
+    }
+  }
+
+  if (scope === 'global') {
+    const st = String(messageSearchSessionType.value || '').trim()
+    if (st) params.session_type = st
+  }
+
+  const api = useApi()
+  messageSearchSenderLoading.value = true
+  try {
+    const resp = await api.listChatSearchSenders(params)
+    const status = String(resp?.status || 'success')
+    if (status !== 'success') {
+      if (status !== 'index_building') {
+        messageSearchSenderError.value = String(resp?.message || '加载发送者失败')
+      }
+      messageSearchSenderOptions.value = []
+      messageSearchSenderOptionsKey.value = ''
+      return []
+    }
+    const list = Array.isArray(resp?.senders) ? resp.senders : []
+    messageSearchSenderOptions.value = list
+    messageSearchSenderOptionsKey.value = getMessageSearchSenderFacetKey()
+    const cur = String(messageSearchSender.value || '').trim()
+    if (cur && !list.some((s) => String(s?.username || '').trim() === cur)) {
+      messageSearchSender.value = ''
+    }
+    return list
+  } catch (e) {
+    messageSearchSenderError.value = e?.message || '加载发送者失败'
+    messageSearchSenderOptions.value = []
+    messageSearchSenderOptionsKey.value = ''
+    return []
+  } finally {
+    messageSearchSenderLoading.value = false
+  }
+}
+
+const stopMessageSearchIndexPolling = () => {
+  if (messageSearchIndexPollTimer) clearInterval(messageSearchIndexPollTimer)
+  messageSearchIndexPollTimer = null
+}
+
+const ensureMessageSearchIndexPolling = () => {
+  if (messageSearchIndexPollTimer) return
+  messageSearchIndexPollTimer = setInterval(async () => {
+    if (!messageSearchOpen.value) {
+      stopMessageSearchIndexPolling()
+      return
+    }
+
+    const info = await fetchMessageSearchIndexStatus()
+    const exists = !!info?.exists
+    const ready = !!info?.ready
+    const bs = String(info?.build?.status || '')
+    const done = exists && ready && bs !== 'building'
+    if (done) {
+      stopMessageSearchIndexPolling()
+      if (String(messageSearchScope.value || '') === 'conversation') {
+        await fetchMessageSearchSenders()
+      }
+      if (String(messageSearchQuery.value || '').trim()) {
+        await runMessageSearch({ reset: true })
+      }
+    }
+  }, 1200)
+}
+
+const onMessageSearchIndexAction = async () => {
+  if (!selectedAccount.value) return
+  const api = useApi()
+  const rebuild = messageSearchIndexExists.value
+  try {
+    const resp = await api.buildChatSearchIndex({ account: selectedAccount.value, rebuild })
+    messageSearchIndexInfo.value = resp?.index || null
+    messageSearchBackendStatus.value = 'index_building'
+    ensureMessageSearchIndexPolling()
+  } catch (e) {
+    messageSearchError.value = e?.message || '建立索引失败'
+  }
+}
+
+// 关键词高亮函数
+const highlightKeyword = (text, keyword) => {
+  if (!text || !keyword) return escapeHtml(text || '')
+  const escaped = escapeHtml(text)
+  const kw = keyword.trim()
+  if (!kw) return escaped
+  try {
+    // 转义正则特殊字符
+    const escapedKw = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const regex = new RegExp(`(${escapedKw})`, 'gi')
+    return escaped.replace(regex, '<mark class="search-highlight">$1</mark>')
+  } catch (e) {
+    return escaped
+  }
+}
+
+// HTML转义
+const escapeHtml = (str) => {
+  if (!str) return ''
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+const getMessageSearchHitAvatarUrl = (hit) => {
+  if (!hit) return ''
+  const scope = String(messageSearchScope.value || '')
+  const url =
+    scope === 'global'
+      ? (hit.conversationAvatar || hit.senderAvatar || '')
+      : (hit.senderAvatar || hit.conversationAvatar || '')
+  return String(url || '').trim()
+}
+
+const getMessageSearchHitAvatarAlt = (hit) => {
+  if (!hit) return '头像'
+  const scope = String(messageSearchScope.value || '')
+  if (scope === 'global') {
+    const name = String(hit.conversationName || hit.username || '').trim()
+    return name ? `${name} 头像` : '头像'
+  }
+  let name = String(hit.senderDisplayName || '').trim()
+  if (!name) {
+    name = hit.isSent ? '我' : String(hit.senderUsername || '').trim()
+  }
+  return name ? `${name} 头像` : '头像'
+}
+
+const getMessageSearchHitAvatarInitial = (hit) => {
+  if (!hit) return '?'
+  const scope = String(messageSearchScope.value || '')
+  let text = ''
+  if (scope === 'global') {
+    text = String(hit.conversationName || hit.username || '').trim()
+  } else {
+    text = String(hit.senderDisplayName || '').trim()
+    if (!text) {
+      text = hit.isSent ? '我' : String(hit.senderUsername || '').trim()
+    }
+  }
+  return (text.charAt(0) || '?').toString()
+}
+
+// 搜索定位上下文（避免破坏正常分页）
+const searchContext = ref({
+  active: false,
+  username: '',
+  anchorId: '',
+  anchorIndex: -1,
+  savedMessages: null,
+  savedMeta: null
+})
+const highlightMessageId = ref('')
+let highlightMessageTimer = null
+
+// 回到最新按钮
+const showJumpToBottom = ref(false)
 
 // 导出（离线 zip）
 const exportModalOpen = ref(false)
@@ -876,7 +1868,22 @@ const toUnixSeconds = (datetimeLocal) => {
   if (!v) return null
   const d = new Date(v)
   const ms = d.getTime()
-  if (!ms || Number.isNaN(ms)) return null
+  if (Number.isNaN(ms)) return null
+  return Math.floor(ms / 1000)
+}
+
+const dateToUnixSeconds = (dateStr, endOfDay = false) => {
+  const v = String(dateStr || '').trim()
+  if (!v) return null
+  const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return null
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null
+  const dt = new Date(y, mo - 1, d, endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0)
+  const ms = dt.getTime()
+  if (Number.isNaN(ms)) return null
   return Math.floor(ms / 1000)
 }
 
@@ -1080,6 +2087,57 @@ const messagePageSize = 50
 const messageContainerRef = ref(null)
 const activeMessagesFor = ref('')
 
+const updateJumpToBottomState = () => {
+  const c = messageContainerRef.value
+  if (!c) {
+    showJumpToBottom.value = false
+    return
+  }
+  const dist = c.scrollHeight - (c.scrollTop + c.clientHeight)
+  showJumpToBottom.value = dist > 240
+}
+
+const scrollToBottom = () => {
+  const c = messageContainerRef.value
+  if (!c) return
+  c.scrollTop = c.scrollHeight
+  updateJumpToBottomState()
+}
+
+const flashMessage = (id) => {
+  if (!id) return
+  highlightMessageId.value = id
+  if (highlightMessageTimer) clearTimeout(highlightMessageTimer)
+  highlightMessageTimer = setTimeout(() => {
+    highlightMessageId.value = ''
+  }, 2500)
+}
+
+const scrollToMessageId = async (id) => {
+  if (!process.client) return false
+  if (!id) return false
+  await nextTick()
+  const c = messageContainerRef.value
+  if (!c) return false
+  const escape = (v) => {
+    try {
+      if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(v)
+    } catch {}
+    return String(v).replace(/\"/g, '\\\"')
+  }
+  const sel = `[data-msg-id="${escape(String(id))}"]`
+  const el = c.querySelector(sel)
+  if (!el) return false
+  try {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  } catch {
+    try {
+      el.scrollIntoView()
+    } catch {}
+  }
+  return true
+}
+
 // 图片预览状态
 const previewImageUrl = ref(null)
 
@@ -1096,6 +2154,8 @@ const closeImagePreview = () => {
 const voiceRefs = ref({})
 const currentPlayingVoice = ref(null)
 const playingVoiceId = ref(null)
+const highlightServerIdStr = ref('')
+let highlightTimer = null
 
 const setVoiceRef = (id, el) => {
   if (el) {
@@ -1147,6 +2207,21 @@ const getVoiceWidth = (durationMs) => {
   return `${width}px`
 }
 
+const getQuoteVoiceId = (message) => {
+  return `quote:${message?.id || ''}`
+}
+
+const isQuotedVoice = (message) => {
+  const t = String(message?.quoteType || '').trim()
+  if (t === '34') return true
+  if (String(message?.quoteContent || '').trim() === '[语音]' && String(message?.quoteServerId || '').trim()) return true
+  return false
+}
+
+const playQuoteVoice = (message) => {
+  playVoice({ id: getQuoteVoiceId(message) })
+}
+
 const contextMenu = ref({ visible: false, x: 0, y: 0, message: null, kind: '', disabled: false })
 
 const closeContextMenu = () => {
@@ -1160,9 +2235,9 @@ const openMediaContextMenu = (e, message, kind) => {
 
   let actualKind = kind
 
-  let disabled = false
+  let disabled = true
   if (kind === 'voice') {
-    disabled = !message?.serverId
+    disabled = !(message?.serverIdStr || message?.serverId)
   } else if (kind === 'file') {
     disabled = !message?.fileMd5
   } else if (kind === 'image') {
@@ -1191,6 +2266,71 @@ const openMediaContextMenu = (e, message, kind) => {
   }
 }
 
+const copyTextToClipboard = async (text) => {
+  if (!process.client) return false
+  if (typeof text !== 'string') return false
+
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {}
+
+  try {
+    const el = document.createElement('textarea')
+    el.value = text
+    el.setAttribute('readonly', 'true')
+    el.style.position = 'fixed'
+    el.style.left = '-9999px'
+    el.style.top = '-9999px'
+    document.body.appendChild(el)
+    el.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(el)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+const onCopyMessageTextClick = async () => {
+  if (!process.client) return
+  const m = contextMenu.value.message
+  if (!m) return
+
+  try {
+    const text = String(m?.content || '').trim()
+    if (!text) {
+      window.alert('该消息没有可复制的文本')
+      return
+    }
+    const ok = await copyTextToClipboard(text)
+    if (!ok) window.alert('复制失败：无法写入剪贴板')
+  } catch (e) {
+    console.error('复制失败:', e)
+    window.alert('复制失败')
+  } finally {
+    closeContextMenu()
+  }
+}
+
+const onCopyMessageJsonClick = async () => {
+  if (!process.client) return
+  const m = contextMenu.value.message
+  if (!m) return
+
+  try {
+    const raw = toRaw(m) || m
+    const json = JSON.stringify(raw, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2)
+    const ok = await copyTextToClipboard(json)
+    if (!ok) window.alert('复制失败：无法写入剪贴板')
+  } catch (e) {
+    console.error('复制失败:', e)
+    window.alert('复制失败')
+  } finally {
+    closeContextMenu()
+  }
+}
+
 const onOpenFolderClick = async () => {
   if (contextMenu.value.disabled) return
   const api = useApi()
@@ -1208,7 +2348,7 @@ const onOpenFolderClick = async () => {
     }
 
     if (kind === 'voice') {
-      params.server_id = m.serverId
+      params.server_id = m.serverIdStr || m.serverId
     } else if (kind === 'file') {
       params.md5 = m.fileMd5
     } else if (kind === 'image') {
@@ -1228,6 +2368,363 @@ const onOpenFolderClick = async () => {
   } finally {
     closeContextMenu()
   }
+}
+
+const locateMessageByServerId = async (serverIdStr) => {
+  if (!process.client) return false
+  const target = String(serverIdStr || '').trim()
+  if (!target) return false
+  if (!selectedContact.value) return false
+
+  for (let i = 0; i < 30; i++) {
+    const list = messages.value || []
+    const found = list.find((m) => String(m?.serverIdStr || m?.serverId || '').trim() === target)
+    if (found) {
+      await nextTick()
+      const container = messageContainerRef.value
+      const el = container?.querySelector?.(`[data-server-id="${target}"]`)
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      }
+      highlightServerIdStr.value = target
+      if (highlightTimer) clearTimeout(highlightTimer)
+      highlightTimer = setTimeout(() => {
+        highlightServerIdStr.value = ''
+        highlightTimer = null
+      }, 1800)
+      return true
+    }
+
+    if (!hasMoreMessages.value) break
+    if (isLoadingMessages.value) {
+      await new Promise((r) => setTimeout(r, 120))
+      continue
+    }
+    await loadMoreMessages()
+  }
+
+  return false
+}
+
+const onLocateQuotedMessageClick = async () => {
+  if (!process.client) return
+  const m = contextMenu.value.message
+  const target = String(m?.quoteServerId || '').trim()
+  try {
+    const ok = await locateMessageByServerId(target)
+    if (!ok) window.alert('未找到被引用消息（可能未加载或不在本地）')
+  } finally {
+    closeContextMenu()
+  }
+}
+
+const closeMessageSearch = () => {
+  messageSearchOpen.value = false
+  closeMessageSearchSenderDropdown()
+  messageSearchError.value = ''
+  messageSearchLoading.value = false
+  messageSearchBackendStatus.value = ''
+  stopMessageSearchIndexPolling()
+  if (messageSearchDebounceTimer) clearTimeout(messageSearchDebounceTimer)
+  messageSearchDebounceTimer = null
+}
+
+const ensureMessageSearchScopeValid = () => {
+  if (messageSearchScope.value === 'conversation' && !selectedContact.value) {
+    messageSearchScope.value = 'global'
+  }
+}
+
+const toggleMessageSearch = async () => {
+  messageSearchOpen.value = !messageSearchOpen.value
+  ensureMessageSearchScopeValid()
+  if (!messageSearchOpen.value) return
+  await nextTick()
+  try {
+    messageSearchInputRef.value?.focus?.()
+  } catch {}
+  await fetchMessageSearchIndexStatus()
+  await fetchMessageSearchSenders()
+  if (String(messageSearchQuery.value || '').trim()) {
+    await runMessageSearch({ reset: true })
+  }
+}
+
+let messageSearchReqId = 0
+
+const runMessageSearch = async ({ reset } = {}) => {
+  if (!selectedAccount.value) return
+  ensureMessageSearchScopeValid()
+
+  const q = String(messageSearchQuery.value || '').trim()
+  if (!q) {
+    messageSearchResults.value = []
+    messageSearchHasMore.value = false
+    messageSearchError.value = ''
+    messageSearchSelectedIndex.value = -1
+    messageSearchBackendStatus.value = ''
+    messageSearchTotal.value = 0
+    stopMessageSearchIndexPolling()
+    return
+  }
+
+  if (reset) {
+    messageSearchOffset.value = 0
+    messageSearchResults.value = []
+    messageSearchSelectedIndex.value = -1
+  }
+
+  const reqId = ++messageSearchReqId
+  const api = useApi()
+  messageSearchLoading.value = true
+  messageSearchError.value = ''
+  messageSearchBackendStatus.value = ''
+
+  const scope = String(messageSearchScope.value || 'conversation')
+
+  const params = {
+    account: selectedAccount.value,
+    q,
+    limit: messageSearchLimit,
+    offset: messageSearchOffset.value
+  }
+
+  params.render_types = 'text'
+
+  const range = String(messageSearchRangeDays.value || '')
+  if (range === 'custom') {
+    const start = dateToUnixSeconds(messageSearchStartDate.value, false)
+    const end = dateToUnixSeconds(messageSearchEndDate.value, true)
+    if (start != null) params.start_time = start
+    if (end != null) params.end_time = end
+    if (start != null && end != null && start > end) {
+      messageSearchLoading.value = false
+      messageSearchError.value = '时间范围不合法：开始日期不能晚于结束日期'
+      return
+    }
+  } else {
+    const days = Number(range || 0)
+    if (days > 0 && Number.isFinite(days)) {
+      const end = Math.floor(Date.now() / 1000)
+      const start = Math.max(0, end - Math.floor(days * 24 * 3600))
+      params.start_time = start
+      params.end_time = end
+    }
+  }
+
+  if (scope === 'global') {
+    const st = String(messageSearchSessionType.value || '').trim()
+    if (st) params.session_type = st
+  }
+
+  if (String(messageSearchSender.value || '').trim()) {
+    params.sender = String(messageSearchSender.value || '').trim()
+  }
+
+  if (scope === 'conversation') {
+    if (!selectedContact.value?.username) {
+      messageSearchLoading.value = false
+      messageSearchError.value = '请选择一个会话再搜索'
+      return
+    }
+    params.username = selectedContact.value.username
+  }
+
+  try {
+    const resp = await api.searchChatMessages(params)
+    if (reqId !== messageSearchReqId) return
+
+    if (resp?.index) {
+      messageSearchIndexInfo.value = resp.index
+    }
+
+    const status = String(resp?.status || 'success')
+    messageSearchBackendStatus.value = status
+
+    if (status === 'index_building') {
+      if (reset) {
+        messageSearchResults.value = []
+        messageSearchSelectedIndex.value = -1
+      }
+      messageSearchHasMore.value = false
+      messageSearchTotal.value = 0
+      ensureMessageSearchIndexPolling()
+      return
+    }
+
+    if (status === 'index_error') {
+      if (reset) {
+        messageSearchResults.value = []
+        messageSearchSelectedIndex.value = -1
+      }
+      messageSearchHasMore.value = false
+      messageSearchTotal.value = 0
+      messageSearchError.value = String(resp?.message || '索引错误')
+      stopMessageSearchIndexPolling()
+      return
+    }
+
+    if (status !== 'success') {
+      if (reset) {
+        messageSearchResults.value = []
+        messageSearchSelectedIndex.value = -1
+      }
+      messageSearchHasMore.value = false
+      messageSearchTotal.value = 0
+      messageSearchError.value = String(resp?.message || '搜索失败')
+      stopMessageSearchIndexPolling()
+      return
+    }
+
+    const hits = Array.isArray(resp?.hits) ? resp.hits : []
+    if (reset) {
+      messageSearchResults.value = hits
+    } else {
+      messageSearchResults.value = [...messageSearchResults.value, ...hits]
+    }
+    messageSearchHasMore.value = !!resp?.hasMore
+    messageSearchTotal.value = Number(resp?.total ?? resp?.totalInScan ?? 0)
+    stopMessageSearchIndexPolling()
+
+    if (messageSearchSelectedIndex.value < 0 && messageSearchResults.value.length) {
+      messageSearchSelectedIndex.value = 0
+    }
+
+    // 保存搜索历史（仅在有结果时保存）
+    if (!privacyMode.value && reset && hits.length > 0) {
+      saveSearchHistory(q)
+    }
+  } catch (e) {
+    if (reqId !== messageSearchReqId) return
+    messageSearchError.value = e?.message || '搜索失败'
+  } finally {
+    if (reqId === messageSearchReqId) {
+      messageSearchLoading.value = false
+    }
+  }
+}
+
+const loadMoreSearchResults = async () => {
+  if (!messageSearchHasMore.value) return
+  if (messageSearchLoading.value) return
+  messageSearchOffset.value = Number(messageSearchOffset.value || 0) + messageSearchLimit
+  await runMessageSearch({ reset: false })
+}
+
+const exitSearchContext = async () => {
+  if (!searchContext.value?.active) return
+  const u = String(searchContext.value.username || '').trim()
+  const saved = searchContext.value.savedMessages
+  const savedMeta = searchContext.value.savedMeta
+
+  if (u && saved) {
+    allMessages.value = { ...allMessages.value, [u]: saved }
+  }
+  if (u && savedMeta) {
+    messagesMeta.value = { ...messagesMeta.value, [u]: savedMeta }
+  }
+
+  searchContext.value = {
+    active: false,
+    username: '',
+    anchorId: '',
+    anchorIndex: -1,
+    savedMessages: null,
+    savedMeta: null
+  }
+  highlightMessageId.value = ''
+  await nextTick()
+  updateJumpToBottomState()
+}
+
+const locateSearchHit = async (hit) => {
+  if (!process.client) return
+  if (!selectedAccount.value) return
+  if (!hit?.id) return
+
+  const targetUsername = String(hit?.username || selectedContact.value?.username || '').trim()
+  if (!targetUsername) return
+
+  const targetContact = contacts.value.find((c) => c?.username === targetUsername)
+  if (targetContact && selectedContact.value?.username !== targetUsername) {
+    await selectContact(targetContact, { skipLoadMessages: true })
+  }
+
+  if (searchContext.value?.active && searchContext.value.username !== targetUsername) {
+    await exitSearchContext()
+  }
+
+  if (!searchContext.value?.active) {
+    searchContext.value = {
+      active: true,
+      username: targetUsername,
+      anchorId: String(hit.id),
+      anchorIndex: -1,
+      savedMessages: allMessages.value[targetUsername] || [],
+      savedMeta: messagesMeta.value[targetUsername] || null
+    }
+  } else {
+    searchContext.value.anchorId = String(hit.id)
+  }
+
+  try {
+    const api = useApi()
+    const resp = await api.getChatMessagesAround({
+      account: selectedAccount.value,
+      username: targetUsername,
+      anchor_id: String(hit.id),
+      before: 35,
+      after: 35
+    })
+
+    const raw = resp?.messages || []
+    const mapped = raw.map(normalizeMessage)
+    allMessages.value = { ...allMessages.value, [targetUsername]: mapped }
+    messagesMeta.value = { ...messagesMeta.value, [targetUsername]: { total: mapped.length, hasMore: false } }
+
+    searchContext.value.anchorId = String(resp?.anchorId || hit.id)
+    searchContext.value.anchorIndex = Number(resp?.anchorIndex ?? -1)
+
+    const ok = await scrollToMessageId(searchContext.value.anchorId)
+    if (ok) flashMessage(searchContext.value.anchorId)
+  } catch (e) {
+    window.alert(e?.message || '定位失败')
+  }
+}
+
+const onSearchHitClick = async (hit, idx) => {
+  messageSearchSelectedIndex.value = Number(idx || 0)
+  await locateSearchHit(hit)
+}
+
+const onSearchNext = async () => {
+  const q = String(messageSearchQuery.value || '').trim()
+  if (!q) return
+
+  if (!messageSearchResults.value.length && !messageSearchLoading.value) {
+    await runMessageSearch({ reset: true })
+  }
+  if (!messageSearchResults.value.length) return
+
+  const cur = Number(messageSearchSelectedIndex.value || 0)
+  const next = (cur + 1) % messageSearchResults.value.length
+  messageSearchSelectedIndex.value = next
+  await locateSearchHit(messageSearchResults.value[next])
+}
+
+const onSearchPrev = async () => {
+  const q = String(messageSearchQuery.value || '').trim()
+  if (!q) return
+
+  if (!messageSearchResults.value.length && !messageSearchLoading.value) {
+    await runMessageSearch({ reset: true })
+  }
+  if (!messageSearchResults.value.length) return
+
+  const cur = Number(messageSearchSelectedIndex.value || 0)
+  const prev = (cur - 1 + messageSearchResults.value.length) % messageSearchResults.value.length
+  messageSearchSelectedIndex.value = prev
+  await locateSearchHit(messageSearchResults.value[prev])
 }
 
 // 消息样式展示数据
@@ -1511,8 +3008,12 @@ const hasMoreMessages = computed(() => {
 // 选择联系人
 const selectContact = async (contact, options = {}) => {
   if (!contact) return
+  const nextUsername = contact?.username || ''
+  if (searchContext.value?.active && searchContext.value.username && searchContext.value.username !== nextUsername) {
+    await exitSearchContext()
+  }
   selectedContact.value = contact
-  const username = contact?.username || ''
+  const username = nextUsername
   if (!username) return
   if (options.syncRoute !== false && username) {
     const current = routeUsername.value || ''
@@ -1520,6 +3021,7 @@ const selectContact = async (contact, options = {}) => {
       await navigateTo(buildChatPath(username), { replace: options.replaceRoute !== false })
     }
   }
+  if (options.skipLoadMessages) return
   loadMessages({ username, reset: true })
 }
 
@@ -1548,6 +3050,7 @@ const applyRouteSelection = async () => {
 // 默认选择第一个联系人
 onMounted(() => {
   loadContacts()
+  loadSearchHistory()
 })
 
 const loadContacts = async () => {
@@ -1611,6 +3114,24 @@ const loadSessionsForSelectedAccount = async () => {
   messagesError.value = ''
   selectedContact.value = null
 
+  closeMessageSearch()
+  messageSearchResults.value = []
+  messageSearchOffset.value = 0
+  messageSearchHasMore.value = false
+  messageSearchBackendStatus.value = ''
+  messageSearchTotal.value = 0
+  messageSearchIndexInfo.value = null
+  messageSearchSelectedIndex.value = -1
+  searchContext.value = {
+    active: false,
+    username: '',
+    anchorId: '',
+    anchorIndex: -1,
+    savedMessages: null,
+    savedMeta: null
+  }
+  highlightMessageId.value = ''
+
   await applyRouteSelection()
 }
 
@@ -1673,7 +3194,13 @@ const normalizeMessage = (msg) => {
 
   const normalizedVideoThumbUrl = (isUsableMediaUrl(msg.videoThumbUrl) ? normalizeMaybeUrl(msg.videoThumbUrl) : '') || localVideoThumbUrl
   const normalizedVideoUrl = (isUsableMediaUrl(msg.videoUrl) ? normalizeMaybeUrl(msg.videoUrl) : '') || localVideoUrl
-  const normalizedVoiceUrl = msg.voiceUrl || (msg.serverId ? `${mediaBase}/api/chat/media/voice?account=${encodeURIComponent(selectedAccount.value || '')}&server_id=${encodeURIComponent(String(msg.serverId))}` : '')
+  const serverIdStr = String(msg.serverIdStr || (msg.serverId != null ? String(msg.serverId) : '')).trim()
+  const normalizedVoiceUrl = (() => {
+    if (msg.voiceUrl) return msg.voiceUrl
+    if (!serverIdStr) return ''
+    if (String(msg.renderType || '') !== 'voice') return ''
+    return `${mediaBase}/api/chat/media/voice?account=${encodeURIComponent(selectedAccount.value || '')}&server_id=${encodeURIComponent(serverIdStr)}`
+  })()
 
   const remoteFromServer = (
     typeof msg.emojiRemoteUrl === 'string'
@@ -1714,6 +3241,7 @@ const normalizeMessage = (msg) => {
   return {
     id: msg.id,
     serverId: msg.serverId || 0,
+    serverIdStr,
     sender,
     senderUsername: msg.senderUsername || '',
     senderDisplayName: msg.senderDisplayName || '',
@@ -1744,6 +3272,13 @@ const normalizeMessage = (msg) => {
     videoUrl: normalizedVideoUrl || '',
     quoteTitle: msg.quoteTitle || '',
     quoteContent,
+    quoteUsername: msg.quoteUsername || '',
+    quoteServerId: String(msg.quoteServerId || '').trim(),
+    quoteType: String(msg.quoteType || '').trim(),
+    quoteVoiceLength: msg.quoteVoiceLength || '',
+    quoteVoiceUrl: String(msg.quoteServerId || '').trim()
+      ? `${mediaBase}/api/chat/media/voice?account=${encodeURIComponent(selectedAccount.value || '')}&server_id=${encodeURIComponent(String(msg.quoteServerId || '').trim())}`
+      : '',
     amount: msg.amount || '',
     coverUrl: msg.coverUrl || '',
     fileSize: msg.fileSize || '',
@@ -1802,18 +3337,63 @@ const onEmojiDownloadClick = async (message) => {
   }
 }
 
-const onGlobalClick = () => {
+const onGlobalClick = (e) => {
   if (contextMenu.value.visible) closeContextMenu()
+  if (messageSearchSenderDropdownOpen.value) {
+    const el = messageSearchSenderDropdownRef.value
+    const t = e?.target
+    if (el && t && !el.contains(t)) {
+      closeMessageSearchSenderDropdown()
+    }
+  }
+}
+
+const openMessageSearch = async () => {
+  messageSearchOpen.value = true
+  ensureMessageSearchScopeValid()
+  await nextTick()
+  try {
+    messageSearchInputRef.value?.focus?.()
+  } catch {}
+  await fetchMessageSearchIndexStatus()
+}
+
+const onGlobalKeyDown = (e) => {
+  if (!process.client) return
+
+  const key = String(e?.key || '')
+  const lower = key.toLowerCase()
+
+  if ((e.ctrlKey || e.metaKey) && lower === 'f') {
+    e.preventDefault()
+    openMessageSearch()
+    return
+  }
+
+  if (key === 'Escape') {
+    if (contextMenu.value.visible) closeContextMenu()
+    if (previewImageUrl.value) closeImagePreview()
+    if (messageSearchSenderDropdownOpen.value) closeMessageSearchSenderDropdown()
+    if (messageSearchOpen.value) closeMessageSearch()
+    if (searchContext.value?.active) exitSearchContext()
+  }
 }
 
 onMounted(() => {
   if (!process.client) return
   document.addEventListener('click', onGlobalClick)
+  document.addEventListener('keydown', onGlobalKeyDown)
 })
 
 onUnmounted(() => {
   if (!process.client) return
   document.removeEventListener('click', onGlobalClick)
+  document.removeEventListener('keydown', onGlobalKeyDown)
+  if (messageSearchDebounceTimer) clearTimeout(messageSearchDebounceTimer)
+  messageSearchDebounceTimer = null
+  if (highlightMessageTimer) clearTimeout(highlightMessageTimer)
+  highlightMessageTimer = null
+  stopMessageSearchIndexPolling()
   stopExportPolling()
 })
 
@@ -1878,6 +3458,7 @@ const loadMessages = async ({ username, reset }) => {
         c.scrollTop = beforeScrollTop + (afterScrollHeight - beforeScrollHeight)
       }
     }
+    updateJumpToBottomState()
   } catch (e) {
     messagesError.value = e?.message || '加载聊天记录失败'
   } finally {
@@ -1887,11 +3468,13 @@ const loadMessages = async ({ username, reset }) => {
 
 const loadMoreMessages = async () => {
   if (!selectedContact.value) return
+  if (searchContext.value?.active) return
   await loadMessages({ username: selectedContact.value.username, reset: false })
 }
 
 const refreshSelectedMessages = async () => {
   if (!selectedContact.value) return
+  if (searchContext.value?.active) await exitSearchContext()
   await loadMessages({ username: selectedContact.value.username, reset: true })
 }
 
@@ -1904,12 +3487,106 @@ watch(
   { immediate: true }
 )
 
+watch(messageSearchScope, async () => {
+  if (!messageSearchOpen.value) return
+  ensureMessageSearchScopeValid()
+  closeMessageSearchSenderDropdown()
+  messageSearchSender.value = ''
+  messageSearchSenderOptions.value = []
+  messageSearchSenderOptionsKey.value = ''
+  await fetchMessageSearchSenders()
+  messageSearchOffset.value = 0
+  messageSearchResults.value = []
+  messageSearchSelectedIndex.value = -1
+  if (String(messageSearchQuery.value || '').trim()) {
+    await runMessageSearch({ reset: true })
+  }
+})
+
+watch(messageSearchRangeDays, async () => {
+  if (!messageSearchOpen.value) return
+  closeMessageSearchSenderDropdown()
+  messageSearchOffset.value = 0
+  messageSearchResults.value = []
+  messageSearchSelectedIndex.value = -1
+  if (String(messageSearchQuery.value || '').trim()) {
+    await runMessageSearch({ reset: true })
+  }
+})
+
+watch(messageSearchSessionType, async () => {
+  if (!messageSearchOpen.value) return
+  if (String(messageSearchScope.value || '') !== 'global') return
+  closeMessageSearchSenderDropdown()
+  messageSearchSender.value = ''
+  messageSearchSenderOptions.value = []
+  messageSearchSenderOptionsKey.value = ''
+  await fetchMessageSearchSenders()
+  messageSearchOffset.value = 0
+  messageSearchResults.value = []
+  messageSearchSelectedIndex.value = -1
+  if (String(messageSearchQuery.value || '').trim()) {
+    await runMessageSearch({ reset: true })
+  }
+})
+
+watch([messageSearchStartDate, messageSearchEndDate], async () => {
+  if (!messageSearchOpen.value) return
+  if (String(messageSearchRangeDays.value || '') !== 'custom') return
+  closeMessageSearchSenderDropdown()
+  messageSearchOffset.value = 0
+  messageSearchResults.value = []
+  messageSearchSelectedIndex.value = -1
+  if (String(messageSearchQuery.value || '').trim()) {
+    await runMessageSearch({ reset: true })
+  }
+})
+
+watch(messageSearchSender, async () => {
+  if (!messageSearchOpen.value) return
+  messageSearchOffset.value = 0
+  messageSearchResults.value = []
+  messageSearchSelectedIndex.value = -1
+  if (String(messageSearchQuery.value || '').trim()) {
+    await runMessageSearch({ reset: true })
+  }
+})
+
+watch(messageSearchQuery, () => {
+  if (!messageSearchOpen.value) return
+  if (messageSearchDebounceTimer) clearTimeout(messageSearchDebounceTimer)
+  messageSearchDebounceTimer = null
+  const q = String(messageSearchQuery.value || '').trim()
+  if (q.length < 2) return
+  messageSearchDebounceTimer = setTimeout(() => {
+    runMessageSearch({ reset: true })
+  }, 280)
+})
+
+watch(
+  () => selectedContact.value?.username,
+  async () => {
+    if (!messageSearchOpen.value) return
+    if (String(messageSearchScope.value || '') !== 'conversation') return
+    closeMessageSearchSenderDropdown()
+    messageSearchSender.value = ''
+    messageSearchSenderOptions.value = []
+    messageSearchSenderOptionsKey.value = ''
+    await fetchMessageSearchSenders()
+    if (String(messageSearchQuery.value || '').trim()) {
+      await runMessageSearch({ reset: true })
+    }
+  }
+)
+
 const autoLoadReady = ref(true)
 
 const onMessageScroll = async () => {
   const c = messageContainerRef.value
   if (!c) return
+  updateJumpToBottomState()
   if (!selectedContact.value) return
+  if (searchContext.value?.active) return
 
   if (c.scrollTop > 120) {
     autoLoadReady.value = true
@@ -2158,6 +3835,12 @@ const LinkCard = defineComponent({
   height: 18px;
   flex-shrink: 0;
   color: #1a1a1a;
+}
+
+.wechat-quote-voice-icon {
+  width: 14px;
+  height: 14px;
+  color: inherit;
 }
 
 .voice-icon-sent {
@@ -2576,5 +4259,63 @@ const LinkCard = defineComponent({
 
 .privacy-blur:hover {
   filter: none;
+}
+
+/* 定位引用消息的高亮效果 */
+.message-locate-highlight {
+  position: relative;
+  animation: locate-pulse 1.8s ease-out;
+}
+
+.message-locate-highlight::before {
+  content: '';
+  position: absolute;
+  inset: -4px -8px;
+  border-radius: 8px;
+  background: rgba(3, 193, 96, 0.12);
+  pointer-events: none;
+  animation: locate-fade 1.8s ease-out forwards;
+}
+
+@keyframes locate-pulse {
+  0% {
+    transform: scale(1.02);
+  }
+  15% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes locate-fade {
+  0% {
+    opacity: 1;
+    background: rgba(3, 193, 96, 0.15);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 骨架屏加载动画 */
+.skeleton-pulse {
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-loading {
+  0% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 0.6;
+  }
 }
 </style>
