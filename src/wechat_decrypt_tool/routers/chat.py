@@ -73,6 +73,18 @@ def _normalize_session_type(value: Optional[str]) -> Optional[str]:
     raise HTTPException(status_code=400, detail="Invalid session_type, use 'group' or 'single'.")
 
 
+def _normalize_render_type_key(value: Any) -> str:
+    v = str(value or "").strip()
+    if not v:
+        return ""
+    if v == "redPacket":
+        return "redpacket"
+    lower = v.lower()
+    if lower in {"redpacket", "red_packet", "red-packet", "redenvelope", "red_envelope"}:
+        return "redpacket"
+    return lower
+
+
 @router.get("/api/chat/search-index/status", summary="消息搜索索引状态")
 async def chat_search_index_status(account: Optional[str] = None):
     account_dir = _resolve_account_dir(account)
@@ -1082,6 +1094,440 @@ async def list_chat_sessions(
     }
 
 
+def _collect_chat_messages(
+    *,
+    username: str,
+    account_dir: Path,
+    db_paths: list[Path],
+    resource_conn: Optional[sqlite3.Connection],
+    resource_chat_id: Optional[int],
+    take: int,
+    want_types: Optional[set[str]],
+) -> tuple[list[dict[str, Any]], bool, list[str], list[str], set[str]]:
+    is_group = bool(username.endswith("@chatroom"))
+    take = int(take)
+    if take < 0:
+        take = 0
+    take_probe = take + 1
+
+    merged: list[dict[str, Any]] = []
+    sender_usernames: list[str] = []
+    quote_usernames: list[str] = []
+    pat_usernames: set[str] = set()
+    has_more_any = False
+
+    for db_path in db_paths:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            table_name = _resolve_msg_table_name(conn, username)
+            if not table_name:
+                continue
+
+            my_wxid = account_dir.name
+            my_rowid = None
+            try:
+                r = conn.execute(
+                    "SELECT rowid FROM Name2Id WHERE user_name = ? LIMIT 1",
+                    (my_wxid,),
+                ).fetchone()
+                if r is not None:
+                    my_rowid = int(r[0])
+            except Exception:
+                my_rowid = None
+
+            quoted_table = _quote_ident(table_name)
+            sql_with_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, n.user_name AS sender_username "
+                f"FROM {quoted_table} m "
+                "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
+                "ORDER BY m.create_time DESC, m.sort_seq DESC, m.local_id DESC "
+                "LIMIT ?"
+            )
+            sql_no_join = (
+                "SELECT "
+                "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
+                "m.message_content, m.compress_content, '' AS sender_username "
+                f"FROM {quoted_table} m "
+                "ORDER BY m.create_time DESC, m.sort_seq DESC, m.local_id DESC "
+                "LIMIT ?"
+            )
+
+            # Force sqlite3 to return TEXT as raw bytes for this query, so we can zstd-decompress
+            # compress_content reliably.
+            conn.text_factory = bytes
+
+            try:
+                rows = conn.execute(sql_with_join, (take_probe,)).fetchall()
+            except Exception:
+                rows = conn.execute(sql_no_join, (take_probe,)).fetchall()
+            if len(rows) > take:
+                has_more_any = True
+                rows = rows[:take]
+
+            for r in rows:
+                local_id = int(r["local_id"] or 0)
+                create_time = int(r["create_time"] or 0)
+                sort_seq = int(r["sort_seq"] or 0) if r["sort_seq"] is not None else 0
+                local_type = int(r["local_type"] or 0)
+                sender_username = _decode_sqlite_text(r["sender_username"]).strip()
+
+                is_sent = False
+                if my_rowid is not None:
+                    try:
+                        is_sent = int(r["real_sender_id"] or 0) == int(my_rowid)
+                    except Exception:
+                        is_sent = False
+
+                raw_text = _decode_message_content(r["compress_content"], r["message_content"])
+                raw_text = raw_text.strip()
+
+                sender_prefix = ""
+                if is_group and not raw_text.startswith("<") and not raw_text.startswith('"<'):
+                    sender_prefix, raw_text = _split_group_sender_prefix(raw_text)
+
+                if is_group and sender_prefix:
+                    sender_username = sender_prefix
+
+                if is_group and (raw_text.startswith("<") or raw_text.startswith('"<')):
+                    xml_sender = _extract_sender_from_group_xml(raw_text)
+                    if xml_sender:
+                        sender_username = xml_sender
+
+                if is_sent:
+                    sender_username = account_dir.name
+                elif (not is_group) and (not sender_username):
+                    sender_username = username
+
+                render_type = "text"
+                content_text = raw_text
+                title = ""
+                url = ""
+                image_md5 = ""
+                emoji_md5 = ""
+                emoji_url = ""
+                thumb_url = ""
+                image_url = ""
+                image_file_id = ""
+                video_md5 = ""
+                video_thumb_md5 = ""
+                video_file_id = ""
+                video_thumb_file_id = ""
+                video_url = ""
+                video_thumb_url = ""
+                voice_length = ""
+                quote_username = ""
+                quote_title = ""
+                quote_content = ""
+                quote_server_id = ""
+                quote_type = ""
+                quote_voice_length = ""
+                amount = ""
+                cover_url = ""
+                file_size = ""
+                pay_sub_type = ""
+                transfer_status = ""
+                file_md5 = ""
+                transfer_id = ""
+                voip_type = ""
+
+                if local_type == 10000:
+                    render_type = "system"
+                    if "revokemsg" in raw_text:
+                        content_text = "撤回了一条消息"
+                    else:
+                        import re
+
+                        content_text = re.sub(r"</?[_a-zA-Z0-9]+[^>]*>", "", raw_text)
+                        content_text = re.sub(r"\s+", " ", content_text).strip() or "[系统消息]"
+                elif local_type == 49:
+                    parsed = _parse_app_message(raw_text)
+                    render_type = str(parsed.get("renderType") or "text")
+                    content_text = str(parsed.get("content") or "")
+                    title = str(parsed.get("title") or "")
+                    url = str(parsed.get("url") or "")
+                    quote_title = str(parsed.get("quoteTitle") or "")
+                    quote_content = str(parsed.get("quoteContent") or "")
+                    quote_username = str(parsed.get("quoteUsername") or "")
+                    quote_server_id = str(parsed.get("quoteServerId") or "")
+                    quote_type = str(parsed.get("quoteType") or "")
+                    quote_voice_length = str(parsed.get("quoteVoiceLength") or "")
+                    amount = str(parsed.get("amount") or "")
+                    cover_url = str(parsed.get("coverUrl") or "")
+                    thumb_url = str(parsed.get("thumbUrl") or "")
+                    file_size = str(parsed.get("size") or "")
+                    pay_sub_type = str(parsed.get("paySubType") or "")
+                    file_md5 = str(parsed.get("fileMd5") or "")
+                    transfer_id = str(parsed.get("transferId") or "")
+
+                    if render_type == "transfer":
+                        # 直接从原始 XML 提取 transferid（可能在 wcpayinfo 内）
+                        if not transfer_id:
+                            transfer_id = _extract_xml_tag_or_attr(raw_text, "transferid") or ""
+                        transfer_status = _infer_transfer_status_text(
+                            is_sent=is_sent,
+                            paysubtype=pay_sub_type,
+                            receivestatus=str(parsed.get("receiveStatus") or ""),
+                            sendertitle=str(parsed.get("senderTitle") or ""),
+                            receivertitle=str(parsed.get("receiverTitle") or ""),
+                            senderdes=str(parsed.get("senderDes") or ""),
+                            receiverdes=str(parsed.get("receiverDes") or ""),
+                        )
+                        if not content_text:
+                            content_text = transfer_status or "转账"
+                elif local_type == 266287972401:
+                    render_type = "system"
+                    template = _extract_xml_tag_text(raw_text, "template")
+                    if template:
+                        import re
+
+                        pat_usernames.update({m.group(1) for m in re.finditer(r"\$\{([^}]+)\}", template) if m.group(1)})
+                        content_text = "[拍一拍]"
+                    else:
+                        content_text = "[拍一拍]"
+                elif local_type == 244813135921:
+                    render_type = "quote"
+                    parsed = _parse_app_message(raw_text)
+                    content_text = str(parsed.get("content") or "[引用消息]")
+                    quote_title = str(parsed.get("quoteTitle") or "")
+                    quote_content = str(parsed.get("quoteContent") or "")
+                    quote_username = str(parsed.get("quoteUsername") or "")
+                    quote_server_id = str(parsed.get("quoteServerId") or "")
+                    quote_type = str(parsed.get("quoteType") or "")
+                    quote_voice_length = str(parsed.get("quoteVoiceLength") or "")
+                elif local_type == 3:
+                    render_type = "image"
+                    # 先尝试从 XML 中提取 md5（不同版本字段可能不同）
+                    image_md5 = _extract_xml_attr(raw_text, "md5") or _extract_xml_tag_text(raw_text, "md5")
+                    if not image_md5:
+                        for k in [
+                            "cdnthumbmd5",
+                            "cdnthumd5",
+                            "cdnmidimgmd5",
+                            "cdnbigimgmd5",
+                            "hdmd5",
+                            "hevc_mid_md5",
+                            "hevc_md5",
+                            "imgmd5",
+                            "filemd5",
+                        ]:
+                            image_md5 = _extract_xml_attr(raw_text, k) or _extract_xml_tag_text(raw_text, k)
+                            if image_md5:
+                                break
+
+                    # Extract CDN URL (some versions store a non-HTTP "file id" string here)
+                    _cdn_url_or_id = (
+                        _extract_xml_attr(raw_text, "cdnthumburl")
+                        or _extract_xml_attr(raw_text, "cdnthumurl")
+                        or _extract_xml_attr(raw_text, "cdnmidimgurl")
+                        or _extract_xml_attr(raw_text, "cdnbigimgurl")
+                        or _extract_xml_tag_text(raw_text, "cdnthumburl")
+                        or _extract_xml_tag_text(raw_text, "cdnthumurl")
+                        or _extract_xml_tag_text(raw_text, "cdnmidimgurl")
+                        or _extract_xml_tag_text(raw_text, "cdnbigimgurl")
+                    )
+                    _cdn_url_or_id = str(_cdn_url_or_id or "").strip()
+                    image_url = _cdn_url_or_id if _cdn_url_or_id.startswith(("http://", "https://")) else ""
+                    if (not image_url) and _cdn_url_or_id:
+                        image_file_id = _cdn_url_or_id
+
+                    if (not image_md5) and resource_conn is not None:
+                        image_md5 = _lookup_resource_md5(
+                            resource_conn,
+                            resource_chat_id,
+                            message_local_type=local_type,
+                            server_id=int(r["server_id"] or 0),
+                            local_id=local_id,
+                            create_time=create_time,
+                        )
+                    content_text = "[图片]"
+                elif local_type == 34:
+                    render_type = "voice"
+                    duration = _extract_xml_attr(raw_text, "voicelength")
+                    voice_length = duration
+                    content_text = f"[语音 {duration}秒]" if duration else "[语音]"
+                elif local_type == 43 or local_type == 62:
+                    render_type = "video"
+                    video_md5 = _extract_xml_attr(raw_text, "md5")
+                    video_thumb_md5 = _extract_xml_attr(raw_text, "cdnthumbmd5")
+                    video_thumb_url_or_id = _extract_xml_attr(raw_text, "cdnthumburl") or _extract_xml_tag_text(
+                        raw_text, "cdnthumburl"
+                    )
+                    video_url_or_id = _extract_xml_attr(raw_text, "cdnvideourl") or _extract_xml_tag_text(
+                        raw_text, "cdnvideourl"
+                    )
+
+                    video_thumb_url = (
+                        video_thumb_url_or_id
+                        if str(video_thumb_url_or_id or "").strip().lower().startswith(("http://", "https://"))
+                        else ""
+                    )
+                    video_url = (
+                        video_url_or_id
+                        if str(video_url_or_id or "").strip().lower().startswith(("http://", "https://"))
+                        else ""
+                    )
+                    video_thumb_file_id = "" if video_thumb_url else (str(video_thumb_url_or_id or "").strip() or "")
+                    video_file_id = "" if video_url else (str(video_url_or_id or "").strip() or "")
+                    if (not video_thumb_md5) and resource_conn is not None:
+                        video_thumb_md5 = _lookup_resource_md5(
+                            resource_conn,
+                            resource_chat_id,
+                            message_local_type=local_type,
+                            server_id=int(r["server_id"] or 0),
+                            local_id=local_id,
+                            create_time=create_time,
+                        )
+                    content_text = "[视频]"
+                elif local_type == 47:
+                    render_type = "emoji"
+                    emoji_md5 = _extract_xml_attr(raw_text, "md5")
+                    if not emoji_md5:
+                        emoji_md5 = _extract_xml_tag_text(raw_text, "md5")
+                    emoji_url = _extract_xml_attr(raw_text, "cdnurl")
+                    if not emoji_url:
+                        emoji_url = _extract_xml_tag_text(raw_text, "cdn_url")
+                    if (not emoji_md5) and resource_conn is not None:
+                        emoji_md5 = _lookup_resource_md5(
+                            resource_conn,
+                            resource_chat_id,
+                            message_local_type=local_type,
+                            server_id=int(r["server_id"] or 0),
+                            local_id=local_id,
+                            create_time=create_time,
+                        )
+                    content_text = "[表情]"
+                elif local_type == 50:
+                    render_type = "voip"
+                    try:
+                        import re
+
+                        block = raw_text
+                        m_voip = re.search(
+                            r"(<VoIPBubbleMsg[^>]*>.*?</VoIPBubbleMsg>)",
+                            raw_text,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        )
+                        if m_voip:
+                            block = m_voip.group(1) or raw_text
+                        room_type = str(_extract_xml_tag_text(block, "room_type") or "").strip()
+                        if room_type == "0":
+                            voip_type = "video"
+                        elif room_type == "1":
+                            voip_type = "audio"
+
+                        voip_msg = str(_extract_xml_tag_text(block, "msg") or "").strip()
+                        content_text = voip_msg or "通话"
+                    except Exception:
+                        content_text = "通话"
+                elif local_type != 1:
+                    if not content_text:
+                        content_text = _infer_message_brief_by_local_type(local_type)
+                    else:
+                        if content_text.startswith("<") or content_text.startswith('"<'):
+                            if "<appmsg" in content_text.lower():
+                                parsed = _parse_app_message(content_text)
+                                rt = str(parsed.get("renderType") or "")
+                                if rt and rt != "text":
+                                    render_type = rt
+                                    content_text = str(parsed.get("content") or content_text)
+                                    title = str(parsed.get("title") or title)
+                                    url = str(parsed.get("url") or url)
+                                    quote_title = str(parsed.get("quoteTitle") or quote_title)
+                                    quote_content = str(parsed.get("quoteContent") or quote_content)
+                                    amount = str(parsed.get("amount") or amount)
+                                    cover_url = str(parsed.get("coverUrl") or cover_url)
+                                    thumb_url = str(parsed.get("thumbUrl") or thumb_url)
+                                    file_size = str(parsed.get("size") or file_size)
+                                    pay_sub_type = str(parsed.get("paySubType") or pay_sub_type)
+                                    file_md5 = str(parsed.get("fileMd5") or file_md5)
+                                    transfer_id = str(parsed.get("transferId") or transfer_id)
+
+                                    if render_type == "transfer":
+                                        # 如果 transferId 仍为空，尝试从原始 XML 提取
+                                        if not transfer_id:
+                                            transfer_id = _extract_xml_tag_or_attr(content_text, "transferid") or ""
+                                        transfer_status = _infer_transfer_status_text(
+                                            is_sent=is_sent,
+                                            paysubtype=pay_sub_type,
+                                            receivestatus=str(parsed.get("receiveStatus") or ""),
+                                            sendertitle=str(parsed.get("senderTitle") or ""),
+                                            receivertitle=str(parsed.get("receiverTitle") or ""),
+                                            senderdes=str(parsed.get("senderDes") or ""),
+                                            receiverdes=str(parsed.get("receiverDes") or ""),
+                                        )
+                                        if not content_text:
+                                            content_text = transfer_status or "转账"
+                            t = _extract_xml_tag_text(content_text, "title")
+                            d = _extract_xml_tag_text(content_text, "des")
+                            content_text = t or d or _infer_message_brief_by_local_type(local_type)
+
+                if not content_text:
+                    content_text = _infer_message_brief_by_local_type(local_type)
+
+                if want_types is not None:
+                    rt_key = _normalize_render_type_key(render_type)
+                    if rt_key not in want_types:
+                        continue
+
+                if sender_username:
+                    sender_usernames.append(sender_username)
+                if quote_username:
+                    quote_usernames.append(str(quote_username).strip())
+
+                merged.append(
+                    {
+                        "id": f"{db_path.stem}:{table_name}:{local_id}",
+                        "localId": local_id,
+                        "serverId": int(r["server_id"] or 0),
+                        "serverIdStr": str(int(r["server_id"] or 0)) if int(r["server_id"] or 0) else "",
+                        "type": local_type,
+                        "createTime": create_time,
+                        "sortSeq": sort_seq,
+                        "senderUsername": sender_username,
+                        "isSent": bool(is_sent),
+                        "renderType": render_type,
+                        "content": content_text,
+                        "title": title,
+                        "url": url,
+                        "imageMd5": image_md5,
+                        "imageFileId": image_file_id,
+                        "emojiMd5": emoji_md5,
+                        "emojiUrl": emoji_url,
+                        "thumbUrl": thumb_url,
+                        "imageUrl": image_url,
+                        "videoMd5": video_md5,
+                        "videoThumbMd5": video_thumb_md5,
+                        "videoFileId": video_file_id,
+                        "videoThumbFileId": video_thumb_file_id,
+                        "videoUrl": video_url,
+                        "videoThumbUrl": video_thumb_url,
+                        "voiceLength": voice_length,
+                        "voipType": voip_type,
+                        "quoteUsername": str(quote_username).strip(),
+                        "quoteServerId": str(quote_server_id).strip(),
+                        "quoteType": str(quote_type).strip(),
+                        "quoteVoiceLength": str(quote_voice_length).strip(),
+                        "quoteTitle": quote_title,
+                        "quoteContent": quote_content,
+                        "amount": amount,
+                        "coverUrl": cover_url,
+                        "fileSize": file_size,
+                        "fileMd5": file_md5,
+                        "paySubType": pay_sub_type,
+                        "transferStatus": transfer_status,
+                        "transferId": transfer_id,
+                        "_rawText": raw_text if local_type == 266287972401 else "",
+                    }
+                )
+        finally:
+            conn.close()
+
+    return merged, has_more_any, sender_usernames, quote_usernames, pat_usernames
+
+
 @router.get("/api/chat/messages", summary="获取会话消息列表")
 async def list_chat_messages(
     request: Request,
@@ -1090,6 +1536,7 @@ async def list_chat_messages(
     limit: int = 50,
     offset: int = 0,
     order: str = "asc",
+    render_types: Optional[str] = None,
 ):
     if not username:
         raise HTTPException(status_code=400, detail="Missing username.")
@@ -1133,6 +1580,54 @@ async def list_chat_messages(
         resource_chat_id = None
 
     want_asc = str(order or "").lower() != "desc"
+
+    want_types: Optional[set[str]] = None
+    if render_types is not None:
+        parts = [p.strip() for p in str(render_types or "").split(",") if p.strip()]
+        want = {_normalize_render_type_key(p) for p in parts}
+        want.discard("")
+        if want and not ({"all", "any", "none"} & want):
+            want_types = want
+
+    scan_take = int(limit) + int(offset)
+    if scan_take < 0:
+        scan_take = 0
+
+    merged: list[dict[str, Any]] = []
+    sender_usernames: list[str] = []
+    quote_usernames: list[str] = []
+    pat_usernames: set[str] = set()
+    has_more_any = False
+
+    while True:
+        (
+            merged,
+            has_more_any,
+            sender_usernames,
+            quote_usernames,
+            pat_usernames,
+        ) = _collect_chat_messages(
+            username=username,
+            account_dir=account_dir,
+            db_paths=db_paths,
+            resource_conn=resource_conn,
+            resource_chat_id=resource_chat_id,
+            take=scan_take,
+            want_types=want_types,
+        )
+
+        if want_types is None:
+            break
+
+        if (len(merged) >= (int(offset) + int(limit))) or (not has_more_any):
+            break
+
+        next_take = scan_take * 2 if scan_take > 0 else (int(limit) + int(offset))
+        if next_take <= scan_take:
+            break
+        scan_take = next_take
+
+    r"""
     take = int(limit) + int(offset)
     take_probe = take + 1
     merged: list[dict[str, Any]] = []
@@ -1547,6 +2042,7 @@ async def list_chat_messages(
         finally:
             conn.close()
 
+    """
     if resource_conn is not None:
         try:
             resource_conn.close()
