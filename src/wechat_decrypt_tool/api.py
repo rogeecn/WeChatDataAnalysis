@@ -13,6 +13,7 @@ from .routers.health import router as _health_router
 from .routers.keys import router as _keys_router
 from .routers.media import router as _media_router
 from .routers.wechat_detection import router as _wechat_detection_router
+from .wcdb_realtime import WCDB_REALTIME, shutdown as _wcdb_shutdown
 
 # 初始化日志系统
 setup_logging()
@@ -44,6 +45,18 @@ app.include_router(_media_router)
 app.include_router(_chat_router)
 app.include_router(_chat_export_router)
 app.include_router(_chat_media_router)
+
+
+@app.on_event("shutdown")
+async def _shutdown_wcdb_realtime() -> None:
+    try:
+        WCDB_REALTIME.close_all()
+    except Exception:
+        pass
+    try:
+        _wcdb_shutdown()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
