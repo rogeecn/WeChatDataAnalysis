@@ -75,3 +75,4 @@ jobs:
           files: |
             desktop/dist/*Setup*.exe
             desktop/dist/*Setup*.exe.blockmap
+            desktop/dist/latest.yml
