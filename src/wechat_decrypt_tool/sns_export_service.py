@@ -982,24 +982,8 @@ class SnsExportManager:
             payload = b""
             mt = ""
 
-            # 0) Prefer WeFlow-style remote download+decrypt (accurate when keys are present).
-            if fixed:
-                should_cancel()
-                res = run_async(
-                    _try_fetch_and_decrypt_sns_image_remote(
-                        account_dir=account_dir,
-                        url=fixed,
-                        key=str(key or ""),
-                        token=str(token or ""),
-                        use_cache=use_cache,
-                    )
-                )
-                if res is not None:
-                    payload = bytes(res.payload or b"")
-                    mt = str(res.media_type or "")
-
-            # 1) Local cache fallback (only when cache is enabled; mirrors `/api/sns/media` semantics).
-            if (not payload) and use_cache:
+            # 0) 优先本地缓存；旧朋友圈的 CDN 资源可能已不可用或已降级。
+            if use_cache:
                 try:
                     post_type = int(post.get("type") or 1)
                 except Exception:
@@ -1085,6 +1069,22 @@ class SnsExportManager:
                     except Exception:
                         payload = b""
                         mt = ""
+
+            # 1) 本地未命中后，再走远程下载和解密。
+            if (not payload) and fixed:
+                should_cancel()
+                res = run_async(
+                    _try_fetch_and_decrypt_sns_image_remote(
+                        account_dir=account_dir,
+                        url=fixed,
+                        key=str(key or ""),
+                        token=str(token or ""),
+                        use_cache=use_cache,
+                    )
+                )
+                if res is not None:
+                    payload = bytes(res.payload or b"")
+                    mt = str(res.media_type or "")
 
             # 2) Last resort: proxy the raw URL (may return a Tencent placeholder image).
             if (not payload) and str(raw_url or "").startswith("http"):
