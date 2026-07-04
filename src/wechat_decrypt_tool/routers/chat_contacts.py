@@ -1,3 +1,4 @@
+import base64
 import csv
 import json
 import re
@@ -33,7 +34,9 @@ from ..path_fix import PathFixRoute
 from ..wcdb_realtime import (
     WCDB_REALTIME,
     WCDBRealtimeError,
+    exec_query as _wcdb_exec_query,
     get_avatar_urls as _wcdb_get_avatar_urls,
+    get_contact as _wcdb_get_contact,
     get_display_names as _wcdb_get_display_names,
     get_sessions as _wcdb_get_sessions,
 )
@@ -248,6 +251,49 @@ def _decode_proto_text(raw: bytes) -> str:
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text).strip()
 
 
+def _coerce_blob_bytes(value: Any) -> bytes:
+    if value is None:
+        return b""
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if isinstance(value, list):
+        try:
+            return bytes([int(x) & 0xFF for x in value])
+        except Exception:
+            return b""
+    if isinstance(value, dict):
+        for key in ("hex", "data_hex", "dataHex"):
+            raw = value.get(key)
+            if raw:
+                return _coerce_blob_bytes(str(raw))
+        for key in ("base64", "b64", "data_b64", "dataB64"):
+            raw = _normalize_text(value.get(key))
+            if raw:
+                try:
+                    return base64.b64decode(raw, validate=True)
+                except Exception:
+                    return b""
+        return b""
+
+    text = _normalize_text(value)
+    if not text:
+        return b""
+    compact = re.sub(r"\s+", "", text)
+    if compact.lower().startswith("0x"):
+        compact = compact[2:]
+    if len(compact) >= 2 and len(compact) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]+", compact):
+        try:
+            return bytes.fromhex(compact)
+        except Exception:
+            return b""
+    try:
+        return base64.b64decode(text, validate=True)
+    except Exception:
+        return b""
+
+
 def _parse_contact_extra_buffer(extra_buffer: Any) -> dict[str, Any]:
     out = {
         "gender": 0,
@@ -260,14 +306,7 @@ def _parse_contact_extra_buffer(extra_buffer: Any) -> dict[str, Any]:
     if extra_buffer is None:
         return out
 
-    raw: bytes
-    if isinstance(extra_buffer, memoryview):
-        raw = extra_buffer.tobytes()
-    elif isinstance(extra_buffer, (bytes, bytearray)):
-        raw = bytes(extra_buffer)
-    else:
-        return out
-
+    raw = _coerce_blob_bytes(extra_buffer)
     if not raw:
         return out
 
@@ -406,6 +445,7 @@ def _build_contact_select_sql(table: str, columns: set[str]) -> Optional[str]:
         ("verify_flag", "verify_flag", "0"),
         ("big_head_url", "big_head_url", "''"),
         ("small_head_url", "small_head_url", "''"),
+        ("description", "description", "''"),
         ("extra_buffer", "extra_buffer", "x''"),
     ]
 
@@ -456,6 +496,7 @@ def _load_contact_rows_map(contact_db_path: Path) -> dict[str, dict[str, Any]]:
                     "verify_flag": _to_int(row["verify_flag"] if "verify_flag" in row.keys() else 0),
                     "big_head_url": _normalize_text(row["big_head_url"] if "big_head_url" in row.keys() else ""),
                     "small_head_url": _normalize_text(row["small_head_url"] if "small_head_url" in row.keys() else ""),
+                    "description": _normalize_text(row["description"] if "description" in row.keys() else ""),
                     "gender": _to_int(extra_info.get("gender")),
                     "signature": _normalize_text(extra_info.get("signature")),
                     "country": _normalize_text(extra_info.get("country")),
@@ -599,6 +640,220 @@ def _contact_item_from_session(
         "avatarLink": _normalize_text(avatar_link),
         "_sortTs": int(sort_ts or 0),
     }
+
+
+def _profile_contact_type(username: str, row: Optional[dict[str, Any]] = None) -> str:
+    inferred = _infer_contact_type(username, row or {})
+    if inferred:
+        return inferred
+    if "@chatroom" in username:
+        return "group"
+    if username.startswith("gh_") or username == "weixin":
+        return "official"
+    return "friend"
+
+
+def _pick_contact_row_value(row: dict[str, Any], *keys: str) -> Any:
+    return _pick_case_insensitive_value(row, *keys)
+
+
+def _pick_contact_row_text(row: dict[str, Any], *keys: str) -> str:
+    return _normalize_text(_pick_contact_row_value(row, *keys))
+
+
+def _normalize_contact_profile_row(row: dict[str, Any], fallback_username: str) -> dict[str, Any]:
+    username = (
+        _pick_contact_row_text(row, "username", "user_name", "userName", "UserName")
+        or _normalize_text(fallback_username)
+    )
+    extra_info = _parse_contact_extra_buffer(
+        _pick_contact_row_value(row, "extra_buffer", "extraBuffer", "ExtraBuffer")
+    )
+
+    country = _pick_contact_row_text(row, "country", "Country") or _normalize_text(extra_info.get("country"))
+    province = _pick_contact_row_text(row, "province", "Province") or _normalize_text(extra_info.get("province"))
+    city = _pick_contact_row_text(row, "city", "City") or _normalize_text(extra_info.get("city"))
+    signature = (
+        _pick_contact_row_text(row, "signature", "sign", "description", "desc", "Description")
+        or _normalize_text(extra_info.get("signature"))
+    )
+    source_scene = _to_optional_int(
+        _pick_contact_row_value(row, "source_scene", "sourceScene", "SourceScene")
+    )
+    if source_scene is None:
+        source_scene = _to_optional_int(extra_info.get("source_scene"))
+
+    return {
+        "username": username,
+        "remark": _pick_contact_row_text(row, "remark", "Remark"),
+        "nick_name": _pick_contact_row_text(row, "nick_name", "nickname", "nickName", "NickName"),
+        "alias": _pick_contact_row_text(row, "alias", "Alias"),
+        "local_type": _to_int(_pick_contact_row_value(row, "local_type", "localType", "LocalType")),
+        "verify_flag": _to_int(_pick_contact_row_value(row, "verify_flag", "verifyFlag", "VerifyFlag")),
+        "big_head_url": _pick_contact_row_text(
+            row,
+            "big_head_url",
+            "bigHeadUrl",
+            "bigHeadURL",
+            "big_head_img_url",
+            "bigHeadImgUrl",
+            "avatarUrl",
+        ),
+        "small_head_url": _pick_contact_row_text(
+            row,
+            "small_head_url",
+            "smallHeadUrl",
+            "smallHeadURL",
+            "small_head_img_url",
+            "smallHeadImgUrl",
+        ),
+        "gender": _to_int(_pick_contact_row_value(row, "gender", "Gender") or extra_info.get("gender")),
+        "signature": signature,
+        "country": country,
+        "province": province,
+        "city": city,
+        "source_scene": source_scene,
+    }
+
+
+def _contact_item_from_profile_row(
+    *,
+    account_dir: Path,
+    base_url: str,
+    username: str,
+    row: Optional[dict[str, Any]],
+    display_name_fallback: str = "",
+    avatar_link_fallback: str = "",
+) -> dict[str, Any]:
+    normalized = _normalize_contact_profile_row(row or {}, username) if row else {"username": username}
+    resolved_username = _normalize_text(normalized.get("username")) or username
+    display_name = _pick_display_name(normalized, resolved_username)
+    if display_name == resolved_username and display_name_fallback:
+        display_name = display_name_fallback
+    avatar_link = _normalize_text(_pick_avatar_url(normalized) or avatar_link_fallback)
+    country = _normalize_text(normalized.get("country"))
+    province = _normalize_text(normalized.get("province"))
+    city = _normalize_text(normalized.get("city"))
+    source_scene = _to_optional_int(normalized.get("source_scene"))
+    return {
+        "username": resolved_username,
+        "displayName": _normalize_text(display_name) or display_name_fallback or resolved_username,
+        "remark": _normalize_text(normalized.get("remark")),
+        "nickname": _normalize_text(normalized.get("nick_name")),
+        "alias": _normalize_text(normalized.get("alias")),
+        "gender": _to_int(normalized.get("gender")),
+        "signature": _normalize_text(normalized.get("signature")),
+        "type": _profile_contact_type(resolved_username, normalized),
+        "country": country,
+        "province": province,
+        "city": city,
+        "region": _build_region(country, province, city),
+        "sourceScene": source_scene,
+        "source": _source_scene_label(source_scene),
+        "avatar": base_url + _build_avatar_url(account_dir.name, resolved_username),
+        "avatarLink": avatar_link,
+        "pinyinKey": _build_contact_pinyin_key(_normalize_text(display_name) or resolved_username),
+        "pinyinInitial": _build_contact_pinyin_initial(_normalize_text(display_name) or resolved_username),
+    }
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + str(value or "").replace("'", "''") + "'"
+
+
+def _query_realtime_contact_row(handle: int, username: str) -> Optional[dict[str, Any]]:
+    u = _normalize_text(username)
+    if not u:
+        return None
+
+    try:
+        row = _wcdb_get_contact(handle, u)
+        if isinstance(row, dict) and row:
+            return row
+    except Exception:
+        pass
+
+    quoted = _sql_literal(u)
+    for table in ("contact", "stranger"):
+        try:
+            rows = _wcdb_exec_query(
+                handle,
+                kind="contact",
+                path=None,
+                sql=f"SELECT * FROM {table} WHERE username={quoted} LIMIT 1",
+            )
+        except Exception:
+            continue
+        if rows:
+            first = rows[0]
+            if isinstance(first, dict):
+                return first
+    return None
+
+
+def _get_contact_profile_realtime(
+    *,
+    account_dir: Path,
+    base_url: str,
+    username: str,
+) -> tuple[dict[str, Any], bool]:
+    try:
+        rt_conn = WCDB_REALTIME.ensure_connected(account_dir)
+    except WCDBRealtimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Realtime contact profile unavailable: {e}")
+
+    row: Optional[dict[str, Any]] = None
+    display_name_fallback = ""
+    avatar_link_fallback = ""
+    try:
+        with rt_conn.lock:
+            row = _query_realtime_contact_row(rt_conn.handle, username)
+            if row is None:
+                try:
+                    display_name_fallback = _normalize_text(_wcdb_get_display_names(rt_conn.handle, [username]).get(username))
+                except Exception:
+                    display_name_fallback = ""
+                try:
+                    avatar_link_fallback = _normalize_text(_wcdb_get_avatar_urls(rt_conn.handle, [username]).get(username))
+                except Exception:
+                    avatar_link_fallback = ""
+    except WCDBRealtimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Realtime contact profile lookup failed: {e}")
+
+    return (
+        _contact_item_from_profile_row(
+            account_dir=account_dir,
+            base_url=base_url,
+            username=username,
+            row=row,
+            display_name_fallback=display_name_fallback,
+            avatar_link_fallback=avatar_link_fallback,
+        ),
+        row is not None,
+    )
+
+
+def _get_contact_profile_decrypted(
+    *,
+    account_dir: Path,
+    base_url: str,
+    username: str,
+) -> tuple[dict[str, Any], bool]:
+    contact_rows = _load_contact_rows_map(account_dir / "contact.db")
+    row = contact_rows.get(username)
+    return (
+        _contact_item_from_profile_row(
+            account_dir=account_dir,
+            base_url=base_url,
+            username=username,
+            row=row,
+        ),
+        row is not None,
+    )
 
 
 def _collect_contacts_for_account_realtime(
@@ -928,6 +1183,42 @@ def _write_csv_export(
         writer.writerow([label for _, label in columns])
         for item in contacts:
             writer.writerow([_normalize_text(item.get(key, "")) for key, _ in columns])
+
+
+@router.get("/api/chat/contacts/profile", summary="获取单个联系人资料")
+def get_chat_contact_profile(
+    request: Request,
+    account: Optional[str] = None,
+    username: str = "",
+    source: Optional[str] = None,
+):
+    account_dir = _resolve_account_dir(account)
+    source_norm = _resolve_contacts_source_for_account(_normalize_contacts_source(source), account_dir)
+    base_url = str(request.base_url).rstrip("/")
+    normalized_username = _normalize_text(username)
+    if not normalized_username:
+        raise HTTPException(status_code=400, detail="username is required.")
+
+    if source_norm == "realtime":
+        contact, found = _get_contact_profile_realtime(
+            account_dir=account_dir,
+            base_url=base_url,
+            username=normalized_username,
+        )
+    else:
+        contact, found = _get_contact_profile_decrypted(
+            account_dir=account_dir,
+            base_url=base_url,
+            username=normalized_username,
+        )
+
+    return {
+        "status": "success",
+        "account": account_dir.name,
+        "source": source_norm,
+        "found": bool(found),
+        "contact": contact,
+    }
 
 
 @router.get("/api/chat/contacts", summary="获取联系人列表")
