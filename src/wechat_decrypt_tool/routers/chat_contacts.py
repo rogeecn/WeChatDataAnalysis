@@ -8,8 +8,19 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from pypinyin import Style, lazy_pinyin
 from pydantic import BaseModel, Field
+
+try:
+    from pypinyin import Style, lazy_pinyin
+except Exception:  # pragma: no cover - depends on optional runtime package availability
+    class Style:  # type: ignore[no-redef]
+        NORMAL = "normal"
+
+    def lazy_pinyin(value: Any, *args: Any, **kwargs: Any) -> list[str]:  # type: ignore[no-redef]
+        text = str(value or "")
+        # Fallback without pypinyin: keep ASCII segments for deterministic sorting,
+        # and place CJK/emoji under '#'. This keeps contacts API usable in minimal envs.
+        return [text] if text.isascii() else []
 
 from ..chat_helpers import (
     _build_avatar_url,
@@ -19,6 +30,13 @@ from ..chat_helpers import (
     _should_keep_session,
 )
 from ..path_fix import PathFixRoute
+from ..wcdb_realtime import (
+    WCDB_REALTIME,
+    WCDBRealtimeError,
+    get_avatar_urls as _wcdb_get_avatar_urls,
+    get_display_names as _wcdb_get_display_names,
+    get_sessions as _wcdb_get_sessions,
+)
 
 router = APIRouter(route_class=PathFixRoute)
 
@@ -62,6 +80,7 @@ class ContactTypeFilter(BaseModel):
 
 class ContactExportRequest(BaseModel):
     account: Optional[str] = Field(None, description="账号目录名（可选，默认使用第一个）")
+    source: Optional[str] = Field("auto", description="数据源：auto/realtime 直接读取 WCDB；decrypted 使用旧本地库")
     output_dir: str = Field(..., description="导出目录绝对路径")
     format: str = Field("json", description="导出格式，仅支持 json/csv")
     include_avatar_link: bool = Field(True, description="是否导出 avatarLink 字段")
@@ -96,6 +115,40 @@ def _to_optional_int(v: Any) -> Optional[int]:
         return int(s)
     except Exception:
         return None
+
+
+def _normalize_contacts_source(value: Optional[str]) -> str:
+    v = str(value or "").strip().lower()
+    if not v:
+        return "auto"
+    if v in {"auto", "default", "wechat"}:
+        return "auto"
+    if v in {"realtime", "real-time", "wcdb"}:
+        return "realtime"
+    if v in {"decrypted", "local", "sqlite", "snapshot", "output"}:
+        return "decrypted"
+    raise HTTPException(status_code=400, detail="Invalid source, use 'auto', 'realtime' or 'decrypted'.")
+
+
+def _resolve_contacts_source_for_account(source_norm: str, account_dir: Path) -> str:
+    # 新模式：auto 一律走 direct WCDB。旧本地 contact.db/session.db 只在显式 decrypted 时使用。
+    if source_norm == "auto":
+        return "realtime"
+    return source_norm
+
+
+def _pick_case_insensitive_value(item: dict[str, Any], *keys: str) -> Any:
+    if not isinstance(item, dict):
+        return None
+    for key in keys:
+        if key in item:
+            return item.get(key)
+    lowered = {str(k).lower(): v for k, v in item.items()}
+    for key in keys:
+        lk = str(key).lower()
+        if lk in lowered:
+            return lowered.get(lk)
+    return None
 
 
 _PINYIN_CLEAN_RE = re.compile(r"[^a-z0-9]+")
@@ -516,7 +569,39 @@ def _matches_keyword(contact: dict[str, Any], keyword: str) -> bool:
     return False
 
 
-def _collect_contacts_for_account(
+def _contact_item_from_session(
+    *,
+    account_dir: Path,
+    base_url: str,
+    username: str,
+    display_name: str,
+    avatar_link: str,
+    sort_ts: int,
+) -> dict[str, Any]:
+    contact_type = "group" if "@chatroom" in username else ("official" if username.startswith("gh_") or username == "weixin" else "friend")
+    display_name = _normalize_text(display_name) or username
+    return {
+        "username": username,
+        "displayName": display_name,
+        "remark": "",
+        "nickname": display_name if display_name != username else "",
+        "alias": "",
+        "gender": 0,
+        "signature": "",
+        "type": contact_type,
+        "country": "",
+        "province": "",
+        "city": "",
+        "region": "",
+        "sourceScene": None,
+        "source": "",
+        "avatar": base_url + _build_avatar_url(account_dir.name, username),
+        "avatarLink": _normalize_text(avatar_link),
+        "_sortTs": int(sort_ts or 0),
+    }
+
+
+def _collect_contacts_for_account_realtime(
     *,
     account_dir: Path,
     base_url: str,
@@ -527,6 +612,111 @@ def _collect_contacts_for_account(
 ) -> list[dict[str, Any]]:
     if not (include_friends or include_groups or include_officials):
         return []
+
+    try:
+        rt_conn = WCDB_REALTIME.ensure_connected(account_dir)
+    except WCDBRealtimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Realtime contacts unavailable: {e}")
+
+    try:
+        with rt_conn.lock:
+            raw_sessions = _wcdb_get_sessions(rt_conn.handle)
+    except WCDBRealtimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Realtime session lookup failed: {e}")
+
+    session_rows: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for item in raw_sessions or []:
+        if not isinstance(item, dict):
+            continue
+        username = _normalize_text(
+            _pick_case_insensitive_value(item, "username", "user_name", "UserName")
+        )
+        if not username or username in seen:
+            continue
+        seen.add(username)
+        if not _is_valid_contact_username(username):
+            continue
+        contact_type = "group" if "@chatroom" in username else ("official" if username.startswith("gh_") or username == "weixin" else "friend")
+        if contact_type == "friend" and not include_friends:
+            continue
+        if contact_type == "group" and not include_groups:
+            continue
+        if contact_type == "official" and not include_officials:
+            continue
+        sort_ts = _to_int(
+            _pick_case_insensitive_value(item, "sort_timestamp", "sortTimestamp", "last_timestamp", "lastTimestamp")
+        )
+        session_rows.append((username, sort_ts))
+
+    usernames = [u for u, _ in session_rows]
+    display_names: dict[str, str] = {}
+    avatar_links: dict[str, str] = {}
+    if usernames:
+        try:
+            with rt_conn.lock:
+                display_names = _wcdb_get_display_names(rt_conn.handle, usernames)
+                avatar_links = _wcdb_get_avatar_urls(rt_conn.handle, usernames)
+        except Exception:
+            display_names = {}
+            avatar_links = {}
+
+    contacts: list[dict[str, Any]] = []
+    for username, sort_ts in session_rows:
+        item = _contact_item_from_session(
+            account_dir=account_dir,
+            base_url=base_url,
+            username=username,
+            display_name=str(display_names.get(username) or username),
+            avatar_link=str(avatar_links.get(username) or ""),
+            sort_ts=int(sort_ts or 0),
+        )
+        if not _matches_keyword(item, keyword or ""):
+            continue
+        contacts.append(item)
+
+    contacts.sort(
+        key=lambda x: (
+            -_to_int(x.get("_sortTs", 0)),
+            _normalize_text(x.get("displayName", "")).lower(),
+            _normalize_text(x.get("username", "")).lower(),
+        )
+    )
+    for item in contacts:
+        item.pop("_sortTs", None)
+        name_for_pinyin = _normalize_text(item.get("displayName")) or _normalize_text(item.get("username"))
+        item["pinyinKey"] = _build_contact_pinyin_key(name_for_pinyin)
+        item["pinyinInitial"] = _build_contact_pinyin_initial(name_for_pinyin)
+    return contacts
+
+
+def _collect_contacts_for_account(
+    *,
+    account_dir: Path,
+    base_url: str,
+    keyword: Optional[str],
+    include_friends: bool,
+    include_groups: bool,
+    include_officials: bool,
+    source: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    if not (include_friends or include_groups or include_officials):
+        return []
+
+    source_norm = _resolve_contacts_source_for_account(_normalize_contacts_source(source), account_dir)
+    if source_norm == "realtime":
+        return _collect_contacts_for_account_realtime(
+            account_dir=account_dir,
+            base_url=base_url,
+            keyword=keyword,
+            include_friends=include_friends,
+            include_groups=include_groups,
+            include_officials=include_officials,
+        )
 
     contact_db_path = account_dir / "contact.db"
     session_db_path = account_dir / "session.db"
@@ -685,6 +875,7 @@ def _write_json_export(
     output_path: Path,
     *,
     account: str,
+    source: str,
     contacts: list[dict[str, Any]],
     include_avatar_link: bool,
     keyword: str,
@@ -693,6 +884,7 @@ def _write_json_export(
     payload = {
         "exportedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "account": account,
+        "source": source,
         "count": len(contacts),
         "filters": {
             "keyword": keyword,
@@ -742,12 +934,14 @@ def _write_csv_export(
 def list_chat_contacts(
     request: Request,
     account: Optional[str] = None,
+    source: Optional[str] = None,
     keyword: Optional[str] = None,
     include_friends: bool = True,
     include_groups: bool = True,
     include_officials: bool = True,
 ):
     account_dir = _resolve_account_dir(account)
+    source_norm = _resolve_contacts_source_for_account(_normalize_contacts_source(source), account_dir)
     base_url = str(request.base_url).rstrip("/")
 
     contacts = _collect_contacts_for_account(
@@ -757,11 +951,13 @@ def list_chat_contacts(
         include_friends=bool(include_friends),
         include_groups=bool(include_groups),
         include_officials=bool(include_officials),
+        source=source_norm,
     )
 
     return {
         "status": "success",
         "account": account_dir.name,
+        "source": source_norm,
         "total": len(contacts),
         "counts": _build_counts(contacts),
         "contacts": contacts,
@@ -771,6 +967,7 @@ def list_chat_contacts(
 @router.post("/api/chat/contacts/export", summary="导出联系人")
 def export_chat_contacts(request: Request, req: ContactExportRequest):
     account_dir = _resolve_account_dir(req.account)
+    source_norm = _resolve_contacts_source_for_account(_normalize_contacts_source(req.source), account_dir)
 
     output_dir_raw = _normalize_text(req.output_dir)
     if not output_dir_raw:
@@ -793,6 +990,7 @@ def export_chat_contacts(request: Request, req: ContactExportRequest):
         include_friends=bool(req.contact_types.friends),
         include_groups=bool(req.contact_types.groups),
         include_officials=bool(req.contact_types.officials),
+        source=source_norm,
     )
 
     export_contacts = _build_export_contacts(
@@ -813,6 +1011,7 @@ def export_chat_contacts(request: Request, req: ContactExportRequest):
             _write_json_export(
                 output_path,
                 account=account_dir.name,
+                source=source_norm,
                 contacts=export_contacts,
                 include_avatar_link=bool(req.include_avatar_link),
                 keyword=_normalize_text(req.keyword),
@@ -830,6 +1029,7 @@ def export_chat_contacts(request: Request, req: ContactExportRequest):
     return {
         "status": "success",
         "account": account_dir.name,
+        "source": source_norm,
         "format": fmt,
         "outputPath": str(output_path),
         "count": len(export_contacts),

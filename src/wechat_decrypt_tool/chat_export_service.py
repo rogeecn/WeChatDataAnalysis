@@ -27,6 +27,7 @@ import requests
 from .chat_helpers import (
     _decode_message_content,
     _decode_sqlite_text,
+    _extract_md5_from_packed_info,
     _extract_sender_from_group_xml,
     _extract_xml_attr,
     _extract_xml_tag_or_attr,
@@ -67,11 +68,21 @@ from .media_helpers import (
     _try_find_decrypted_resource,
 )
 from .perf_trace import create_perf_trace
+from .wcdb_realtime import (
+    WCDB_REALTIME,
+    WCDBRealtimeError,
+    get_avatar_urls as _wcdb_get_avatar_urls,
+    get_display_names as _wcdb_get_display_names,
+    get_message_count as _wcdb_get_message_count,
+    get_messages as _wcdb_get_messages,
+    get_sessions as _wcdb_get_sessions,
+)
 
 logger = get_logger(__name__)
 
 ExportFormat = Literal["json", "txt", "html"]
 ExportScope = Literal["selected", "all", "groups", "singles"]
+ChatSource = Literal["auto", "decrypted", "realtime"]
 ExportStatus = Literal["queued", "running", "done", "error", "cancelled"]
 MediaKind = Literal["image", "emoji", "video", "video_thumb", "voice", "file"]
 
@@ -88,6 +99,26 @@ def _safe_json_dumps(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
     except Exception:
         return str(value)
+
+
+def _normalize_chat_source(value: Optional[str], *, default: str = "auto") -> str:
+    v = str(value or "").strip().lower()
+    if not v:
+        v = str(default or "auto").strip().lower()
+    if v in {"decrypted", "local", "sqlite"}:
+        return "decrypted"
+    if v in {"auto", "default", "wechat"}:
+        return "auto"
+    if v in {"realtime", "real-time", "wcdb"}:
+        return "realtime"
+    raise ValueError("Invalid source, use 'auto', 'decrypted' or 'realtime'.")
+
+
+def _has_decrypted_export_dbs(account_dir: Path) -> bool:
+    try:
+        return bool((account_dir / "session.db").exists() and (account_dir / "contact.db").exists())
+    except Exception:
+        return False
 
 
 def _safe_trace(trace_log: Optional[Callable[..., None]], phase: str, **fields: Any) -> None:
@@ -2613,6 +2644,7 @@ class ChatExportManager:
         self,
         *,
         account: Optional[str],
+        source: Optional[ChatSource] = "auto",
         scope: ExportScope,
         usernames: list[str],
         export_format: ExportFormat,
@@ -2631,6 +2663,12 @@ class ChatExportManager:
         file_name: Optional[str],
     ) -> ExportJob:
         account_dir = _resolve_account_dir(account)
+        source_norm = _normalize_chat_source(source, default="auto")
+        if source_norm in {"auto", "realtime"}:
+            try:
+                WCDB_REALTIME.ensure_connected(account_dir)
+            except WCDBRealtimeError as e:
+                raise ValueError(f"Realtime export requires WCDB/direct mode but connection failed: {e}") from e
         export_id = uuid.uuid4().hex[:12]
 
         job = ExportJob(
@@ -2639,6 +2677,7 @@ class ChatExportManager:
             status="queued",
             options={
                 "scope": scope,
+                "source": source_norm,
                 "usernames": usernames,
                 "format": export_format,
                 "startTime": int(start_time) if start_time else None,
@@ -2709,28 +2748,46 @@ class ChatExportManager:
             account=account_dir.name,
         )
         _safe_trace(trace, "job_started", thread=threading.current_thread().name)
+        opts = dict(job.options or {})
+        source_requested = _normalize_chat_source(opts.get("source"), default="auto")
+        source_norm = "realtime" if source_requested in {"auto", "realtime"} else "decrypted"
+        rt_conn = None
+        if source_norm == "realtime":
+            try:
+                rt_conn = WCDB_REALTIME.ensure_connected(account_dir)
+                _safe_trace(
+                    trace,
+                    "realtime_connected",
+                    sourceRequested=source_requested,
+                    dbStorageDir=str(getattr(rt_conn, "db_storage_dir", "") or ""),
+                )
+            except WCDBRealtimeError as e:
+                raise RuntimeError(f"Realtime export requires WCDB/direct mode but connection failed: {e}") from e
+
         realtime_pause_reason = f"chat_export:{job.export_id}"
         realtime_paused = False
-        try:
-            pause_depth = CHAT_REALTIME_AUTOSYNC.pause_account(account_dir.name, reason=realtime_pause_reason)
-            realtime_paused = bool(pause_depth > 0)
-            _safe_trace(
-                trace,
-                "realtime_autosync_paused",
-                account=account_dir.name,
-                reason=realtime_pause_reason,
-                depth=int(pause_depth),
-            )
-        except Exception:
-            logger.exception("failed to pause realtime autosync account=%s export_id=%s", account_dir.name, job.export_id)
-            _safe_trace(
-                trace,
-                "realtime_autosync_pause_failed",
-                account=account_dir.name,
-                reason=realtime_pause_reason,
-            )
+        if source_norm == "decrypted":
+            try:
+                pause_depth = CHAT_REALTIME_AUTOSYNC.pause_account(account_dir.name, reason=realtime_pause_reason)
+                realtime_paused = bool(pause_depth > 0)
+                _safe_trace(
+                    trace,
+                    "realtime_autosync_paused",
+                    account=account_dir.name,
+                    reason=realtime_pause_reason,
+                    depth=int(pause_depth),
+                )
+            except Exception:
+                logger.exception("failed to pause realtime autosync account=%s export_id=%s", account_dir.name, job.export_id)
+                _safe_trace(
+                    trace,
+                    "realtime_autosync_pause_failed",
+                    account=account_dir.name,
+                    reason=realtime_pause_reason,
+                )
+        else:
+            _safe_trace(trace, "realtime_autosync_pause_skipped", source=source_norm)
 
-        opts = dict(job.options or {})
         scope: ExportScope = str(opts.get("scope") or "selected")  # type: ignore[assignment]
         export_format_raw = str(opts.get("format") or "json").strip() or "json"
         if export_format_raw not in {"json", "txt", "html"}:
@@ -2781,6 +2838,8 @@ class ChatExportManager:
             trace,
             "options_resolved",
             scope=scope,
+            source=source_norm,
+            sourceRequested=source_requested,
             format=export_format,
             includeMedia=include_media,
             mediaKinds=media_kinds,
@@ -2800,6 +2859,8 @@ class ChatExportManager:
             usernames=list(opts.get("usernames") or []),
             include_hidden=include_hidden,
             include_official=include_official,
+            source=source_norm,
+            rt_conn=rt_conn,
         )
         _safe_trace(
             trace,
@@ -2875,17 +2936,39 @@ class ChatExportManager:
 
         contact_cache: dict[str, str] = {}
         contact_row_cache: dict[str, sqlite3.Row] = {}
+        wcdb_display_cache: dict[str, str] = {}
+        if source_norm == "realtime" and target_usernames and rt_conn is not None:
+            try:
+                with rt_conn.lock:
+                    wcdb_display_cache = _wcdb_get_display_names(rt_conn.handle, list(target_usernames))
+            except Exception:
+                wcdb_display_cache = {}
 
         def resolve_display_name(u: str) -> str:
             if not u:
                 return ""
             if u in contact_cache:
                 return contact_cache[u]
+            wd = str(wcdb_display_cache.get(u) or "").strip()
+            if wd and wd != u:
+                contact_cache[u] = wd
+                return wd
             rows = _load_contact_rows(contact_db_path, [u])
             row = rows.get(u)
             if row is not None:
                 contact_row_cache[u] = row
             name = _pick_display_name(row, u)
+            if name == u:
+                try:
+                    if rt_conn is not None:
+                        with rt_conn.lock:
+                            extra = _wcdb_get_display_names(rt_conn.handle, [u])
+                        wd2 = str(extra.get(u) or "").strip()
+                        if wd2 and wd2 != u:
+                            name = wd2
+                            wcdb_display_cache[u] = wd2
+                except Exception:
+                    pass
             contact_cache[u] = name
             return name
 
@@ -3027,13 +3110,30 @@ class ChatExportManager:
                             avatar_written=avatar_written,
                         )
 
-                        try:
-                            preview_by_username = _load_latest_message_previews(account_dir, target_usernames)
-                        except Exception:
-                            preview_by_username = {}
+                        if source_norm == "realtime" and rt_conn is not None:
+                            try:
+                                with rt_conn.lock:
+                                    raw_sessions_for_index = _wcdb_get_sessions(rt_conn.handle)
+                                for item in _normalize_realtime_session_rows(raw_sessions_for_index):
+                                    u = str(item.get("username") or "").strip()
+                                    if not u or u not in target_usernames:
+                                        continue
+                                    preview = re.sub(r"\s+", " ", str(item.get("summary") or "").strip()).strip()
+                                    if not preview:
+                                        preview = _infer_message_brief_by_local_type(int(item.get("last_msg_type") or 0))
+                                    preview_by_username[u] = preview
+                                    last_ts_by_username[u] = int(item.get("sort_timestamp") or 0)
+                            except Exception:
+                                preview_by_username = {}
+                                last_ts_by_username = {}
+                        else:
+                            try:
+                                preview_by_username = _load_latest_message_previews(account_dir, target_usernames)
+                            except Exception:
+                                preview_by_username = {}
 
                         session_db_path = Path(account_dir) / "session.db"
-                        if session_db_path.exists():
+                        if source_norm != "realtime" and session_db_path.exists():
                             sconn = sqlite3.connect(str(session_db_path))
                             sconn.row_factory = sqlite3.Row
                             try:
@@ -3083,7 +3183,7 @@ class ChatExportManager:
                     for idx, conv_username in enumerate(target_usernames, start=1):
                         _raise_if_job_cancelled(job, "html_session_index", trace, index=idx)
                         conv_row = contact_row_cache.get(conv_username)
-                        conv_name = _pick_display_name(conv_row, conv_username)
+                        conv_name = resolve_display_name(conv_username) if not privacy_mode else _pick_display_name(conv_row, conv_username)
                         conv_is_group = bool(conv_username.endswith("@chatroom"))
                         conv_dir = f"conversations/{_conversation_dir_name(idx, conv_name, conv_username, conv_is_group, privacy_mode)}"
 
@@ -3119,7 +3219,7 @@ class ChatExportManager:
 
                     conv_started = time.perf_counter()
                     conv_row = contact_row_cache.get(conv_username)
-                    conv_name = _pick_display_name(conv_row, conv_username)
+                    conv_name = resolve_display_name(conv_username) if not privacy_mode else _pick_display_name(conv_row, conv_username)
                     conv_is_group = bool(conv_username.endswith("@chatroom"))
 
                     conv_dir = f"conversations/{_conversation_dir_name(idx, conv_name, conv_username, conv_is_group, privacy_mode)}"
@@ -3139,6 +3239,8 @@ class ChatExportManager:
                             start_time=st,
                             end_time=et,
                             local_types=estimate_local_types,
+                            source=source_norm,
+                            rt_conn=rt_conn,
                         )
                     except Exception:
                         estimated_total = 0
@@ -3206,6 +3308,8 @@ class ChatExportManager:
                             end_time=et,
                             want_types=want_types,
                             local_types=local_types,
+                            source=source_norm,
+                            rt_conn=rt_conn,
                             resource_conn=resource_conn,
                             resource_chat_id=chat_id,
                             head_image_conn=head_image_conn,
@@ -3240,6 +3344,8 @@ class ChatExportManager:
                             end_time=et,
                             want_types=want_types,
                             local_types=local_types,
+                            source=source_norm,
+                            rt_conn=rt_conn,
                             resource_conn=resource_conn,
                             resource_chat_id=chat_id,
                             head_image_conn=head_image_conn,
@@ -3269,6 +3375,8 @@ class ChatExportManager:
                             end_time=et,
                             want_types=want_types,
                             local_types=local_types,
+                            source=source_norm,
+                            rt_conn=rt_conn,
                             resource_conn=resource_conn,
                             resource_chat_id=chat_id,
                             head_image_conn=head_image_conn,
@@ -3409,6 +3517,7 @@ class ChatExportManager:
                     "exportedAt": _now_iso(),
                     "exportId": job.export_id,
                     "account": "hidden" if privacy_mode else account_dir.name,
+                    "source": source_norm,
                     "format": export_format,
                     "scope": scope,
                     "filters": {
@@ -3425,6 +3534,7 @@ class ChatExportManager:
                         "downloadRemoteMedia": bool(download_remote_media),
                         "htmlPageSize": int(html_page_size) if export_format == "html" else None,
                         "privacyMode": privacy_mode,
+                        "sourceRequested": source_requested,
                     },
                     "stats": {
                         "conversations": len(target_usernames),
@@ -3524,10 +3634,43 @@ def _resolve_export_targets(
     usernames: list[str],
     include_hidden: bool,
     include_official: bool,
+    source: str = "decrypted",
+    rt_conn: Any | None = None,
 ) -> list[str]:
     if scope == "selected":
         uniq = list(dict.fromkeys([str(u or "").strip() for u in usernames if str(u or "").strip()]))
         return uniq
+
+    if source == "realtime":
+        if rt_conn is None:
+            rt_conn = WCDB_REALTIME.ensure_connected(account_dir)
+        with rt_conn.lock:
+            raw_sessions = _wcdb_get_sessions(rt_conn.handle)
+        rows = _normalize_realtime_session_rows(raw_sessions)
+
+        def should_include_rt(item: dict[str, Any]) -> bool:
+            u = str(item.get("username") or "").strip()
+            if not u or u == account_dir.name:
+                return False
+            if not include_hidden and int(item.get("is_hidden") or 0) == 1:
+                return False
+            if not _should_keep_session(u, include_official=include_official):
+                return False
+            if scope == "groups" and (not u.endswith("@chatroom")):
+                return False
+            if scope == "singles" and u.endswith("@chatroom"):
+                return False
+            return True
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in rows:
+            u = str(item.get("username") or "").strip()
+            if u in seen or (not should_include_rt(item)):
+                continue
+            seen.add(u)
+            out.append(u)
+        return out
 
     session_rows, session_hidden_by_username = _load_export_session_targets(account_dir)
     contact_usernames = _load_export_contact_usernames(account_dir)
@@ -3563,6 +3706,49 @@ def _resolve_export_targets(
         seen.add(u)
         out.append(u)
 
+    return out
+
+
+def _pick_case_insensitive_value(item: dict[str, Any], *keys: str) -> Any:
+    for k in keys:
+        if k in item and item[k] is not None:
+            return item[k]
+        lk = str(k).lower()
+        for kk, vv in item.items():
+            if str(kk).lower() == lk and vv is not None:
+                return vv
+    return None
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _normalize_realtime_session_rows(raw_sessions: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in raw_sessions or []:
+        if not isinstance(item, dict):
+            continue
+        username = str(_pick_case_insensitive_value(item, "username", "user_name", "UserName") or "").strip()
+        if not username:
+            continue
+        out.append(
+            {
+                "username": username,
+                "is_hidden": _to_int(_pick_case_insensitive_value(item, "is_hidden", "isHidden")),
+                "sort_timestamp": _to_int(
+                    _pick_case_insensitive_value(item, "sort_timestamp", "sortTimestamp", "last_timestamp", "lastTimestamp")
+                ),
+                "summary": str(_pick_case_insensitive_value(item, "summary", "Summary") or ""),
+                "draft": str(_pick_case_insensitive_value(item, "draft", "Draft") or ""),
+                "last_msg_type": _to_int(_pick_case_insensitive_value(item, "last_msg_type", "lastMsgType")),
+                "last_msg_sub_type": _to_int(_pick_case_insensitive_value(item, "last_msg_sub_type", "lastMsgSubType")),
+            }
+        )
+    out.sort(key=lambda r: int(r.get("sort_timestamp") or 0), reverse=True)
     return out
 
 
@@ -3749,26 +3935,59 @@ def _load_message_backed_export_targets(*, account_dir: Path, seed_usernames: se
 def build_chat_export_targets_preview(
     *,
     account_dir: Path,
+    source: str = "auto",
+    rt_conn: Any | None = None,
     include_hidden: bool = True,
     include_official: bool = False,
     base_url: str = "",
 ) -> dict[str, Any]:
+    source_norm = _normalize_chat_source(source, default="auto")
+    if source_norm in {"auto", "realtime"}:
+        source_norm = "realtime"
+        if rt_conn is None:
+            try:
+                rt_conn = WCDB_REALTIME.ensure_connected(account_dir)
+            except WCDBRealtimeError as e:
+                raise ValueError(f"Realtime export targets require WCDB/direct mode but connection failed: {e}") from e
+
     targets = _resolve_export_targets(
         account_dir=account_dir,
         scope="all",
         usernames=[],
         include_hidden=bool(include_hidden),
         include_official=bool(include_official),
+        source=source_norm,
+        rt_conn=rt_conn,
     )
-    session_rows, session_hidden_by_username = _load_export_session_targets(account_dir)
-    session_usernames = {u for u, _sort_ts in session_rows}
+    session_hidden_by_username: dict[str, int] = {}
+    if source_norm == "realtime" and rt_conn is not None:
+        with rt_conn.lock:
+            session_raw = _wcdb_get_sessions(rt_conn.handle)
+        session_rows_norm = _normalize_realtime_session_rows(session_raw)
+        session_usernames = {str(r.get("username") or "").strip() for r in session_rows_norm if str(r.get("username") or "").strip()}
+        session_hidden_by_username = {
+            str(r.get("username") or "").strip(): int(r.get("is_hidden") or 0)
+            for r in session_rows_norm
+            if str(r.get("username") or "").strip()
+        }
+        try:
+            with rt_conn.lock:
+                wcdb_names = _wcdb_get_display_names(rt_conn.handle, targets)
+        except Exception:
+            wcdb_names = {}
+    else:
+        session_rows, session_hidden_by_username = _load_export_session_targets(account_dir)
+        session_usernames = {u for u, _sort_ts in session_rows}
+        wcdb_names = {}
     contact_rows = _load_contact_rows(account_dir / "contact.db", targets)
     base = str(base_url or "").rstrip("/")
 
     conversations: list[dict[str, Any]] = []
     for u in targets:
         row = contact_rows.get(u)
-        display_name = _pick_display_name(row, u) if row is not None else u
+        display_name = str(wcdb_names.get(u) or "").strip()
+        if not display_name:
+            display_name = _pick_display_name(row, u) if row is not None else u
         avatar_path = _build_avatar_url(account_dir.name, u)
         conversations.append(
             {
@@ -3786,6 +4005,7 @@ def build_chat_export_targets_preview(
     return {
         "status": "success",
         "account": account_dir.name,
+        "source": source_norm,
         "includeHidden": bool(include_hidden),
         "includeOfficial": bool(include_official),
         "targets": conversations,
@@ -3800,13 +4020,16 @@ def build_chat_export_targets_preview(
 def get_chat_export_targets_preview(
     *,
     account: Optional[str],
+    source: Optional[str] = "auto",
     include_hidden: bool = True,
     include_official: bool = False,
     base_url: str = "",
 ) -> dict[str, Any]:
     account_dir = _resolve_account_dir(account)
+    source_norm = _normalize_chat_source(source, default="auto")
     return build_chat_export_targets_preview(
         account_dir=account_dir,
+        source=source_norm,
         include_hidden=include_hidden,
         include_official=include_official,
         base_url=base_url,
@@ -3830,6 +4053,90 @@ def _conversation_dir_name(
     return f"{idx:04d}_{base}_{user_part}_{h}"
 
 
+def _normalize_realtime_message_item_for_export(item: dict[str, Any], *, account_dir: Path, conv_username: str) -> _Row:
+    message_content = _pick_case_insensitive_value(item, "message_content", "messageContent", "MessageContent")
+    compress_content = _pick_case_insensitive_value(item, "compress_content", "compressContent", "CompressContent")
+    raw_text = _decode_message_content(compress_content, message_content).strip()
+    sender_username = str(
+        _pick_case_insensitive_value(item, "sender_username", "senderUsername", "sender", "SenderUsername") or ""
+    ).strip()
+
+    is_sent = False
+    sent_value = _pick_case_insensitive_value(item, "computed_is_send", "computed_isSend", "computed_is_sent", "is_send", "isSent")
+    if sent_value is not None:
+        try:
+            is_sent = bool(int(sent_value))
+        except Exception:
+            is_sent = bool(sent_value)
+    if not is_sent:
+        try:
+            if sender_username and sender_username.lower() == account_dir.name.lower():
+                is_sent = True
+        except Exception:
+            pass
+
+    is_group = bool(str(conv_username or "").endswith("@chatroom"))
+    if is_sent:
+        sender_username = account_dir.name
+    elif (not is_group) and (not sender_username):
+        sender_username = conv_username
+
+    table_name = f"msg_{hashlib.md5(str(conv_username or '').strip().encode('utf-8')).hexdigest()}"
+    return _Row(
+        db_stem=f"realtime_{account_dir.name}",
+        table_name=table_name,
+        local_id=_to_int(_pick_case_insensitive_value(item, "local_id", "localId")),
+        server_id=_to_int(_pick_case_insensitive_value(item, "server_id", "serverId", "MsgSvrID")),
+        local_type=_to_int(_pick_case_insensitive_value(item, "local_type", "localType", "Type", "type")),
+        sort_seq=_to_int(_pick_case_insensitive_value(item, "sort_seq", "sortSeq", "SortSeq")),
+        create_time=_to_int(_pick_case_insensitive_value(item, "create_time", "createTime", "CreateTime")),
+        raw_text=raw_text,
+        sender_username=sender_username,
+        is_sent=bool(is_sent),
+        packed_info_data=_pick_case_insensitive_value(item, "packed_info_data", "packedInfoData", "PackedInfoData"),
+    )
+
+
+def _iter_realtime_rows_for_conversation(
+    *,
+    rt_conn: Any,
+    account_dir: Path,
+    conv_username: str,
+    start_time: Optional[int],
+    end_time: Optional[int],
+    local_types: Optional[set[int]] = None,
+) -> Iterable[_Row]:
+    batch = 1000
+    offset = 0
+    rows: list[_Row] = []
+    local_type_filter = {int(x) for x in (local_types or set()) if int(x) != 0} if local_types else None
+    while True:
+        with rt_conn.lock:
+            raw_rows = _wcdb_get_messages(rt_conn.handle, conv_username, limit=batch, offset=offset)
+        if not raw_rows:
+            break
+        offset += len(raw_rows)
+        stop = False
+        for item in raw_rows:
+            if not isinstance(item, dict):
+                continue
+            row = _normalize_realtime_message_item_for_export(item, account_dir=account_dir, conv_username=conv_username)
+            if row.local_id <= 0:
+                continue
+            if local_type_filter and int(row.local_type) not in local_type_filter:
+                continue
+            if end_time is not None and int(row.create_time or 0) > int(end_time):
+                continue
+            if start_time is not None and int(row.create_time or 0) < int(start_time):
+                stop = True
+                continue
+            rows.append(row)
+        if len(raw_rows) < batch or stop:
+            break
+    rows.sort(key=lambda r: (int(r.create_time or 0), int(r.sort_seq or 0), int(r.local_id or 0)))
+    return rows
+
+
 def _estimate_conversation_message_count(
     *,
     account_dir: Path,
@@ -3837,7 +4144,27 @@ def _estimate_conversation_message_count(
     start_time: Optional[int],
     end_time: Optional[int],
     local_types: Optional[set[int]] = None,
+    source: str = "decrypted",
+    rt_conn: Any | None = None,
 ) -> int:
+    if source == "realtime":
+        if rt_conn is None:
+            rt_conn = WCDB_REALTIME.ensure_connected(account_dir)
+        if start_time is None and end_time is None and not local_types:
+            with rt_conn.lock:
+                return int(_wcdb_get_message_count(rt_conn.handle, conv_username) or 0)
+        return sum(
+            1
+            for _ in _iter_realtime_rows_for_conversation(
+                rt_conn=rt_conn,
+                account_dir=account_dir,
+                conv_username=conv_username,
+                start_time=start_time,
+                end_time=end_time,
+                local_types=local_types,
+            )
+        )
+
     total = 0
     for db_path in _iter_message_db_paths(account_dir):
         conn = sqlite3.connect(str(db_path))
@@ -3881,6 +4208,7 @@ class _Row:
     raw_text: str
     sender_username: str
     is_sent: bool
+    packed_info_data: Any = None
 
 
 def _iter_rows_for_conversation(
@@ -3890,7 +4218,21 @@ def _iter_rows_for_conversation(
     start_time: Optional[int],
     end_time: Optional[int],
     local_types: Optional[set[int]] = None,
+    source: str = "decrypted",
+    rt_conn: Any | None = None,
 ) -> Iterable[_Row]:
+    if source == "realtime":
+        if rt_conn is None:
+            rt_conn = WCDB_REALTIME.ensure_connected(account_dir)
+        return _iter_realtime_rows_for_conversation(
+            rt_conn=rt_conn,
+            account_dir=account_dir,
+            conv_username=conv_username,
+            start_time=start_time,
+            end_time=end_time,
+            local_types=local_types,
+        )
+
     db_paths = _iter_message_db_paths(account_dir)
     if not db_paths:
         return []
@@ -3921,6 +4263,15 @@ def _iter_rows_for_conversation(
                 my_rowid = None
 
             quoted = _quote_ident(table_name)
+            has_packed_info_data = False
+            try:
+                cols = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
+                has_packed_info_data = any(
+                    _decode_sqlite_text(c[1]).strip().lower() == "packed_info_data" for c in cols
+                )
+            except Exception:
+                has_packed_info_data = False
+
             where = []
             params: list[Any] = []
             if local_types:
@@ -3937,10 +4288,15 @@ def _iter_rows_for_conversation(
                 params.append(int(end_time))
             where_sql = (" WHERE " + " AND ".join(where)) if where else ""
 
+            packed_select = (
+                "m.packed_info_data AS packed_info_data, " if has_packed_info_data else "NULL AS packed_info_data, "
+            )
             sql_with_join = (
                 "SELECT "
                 "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-                "m.message_content, m.compress_content, n.user_name AS sender_username "
+                "m.message_content, m.compress_content, "
+                + packed_select
+                + "n.user_name AS sender_username "
                 f"FROM {quoted} m "
                 "LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
                 f"{where_sql} "
@@ -3949,7 +4305,9 @@ def _iter_rows_for_conversation(
             sql_no_join = (
                 "SELECT "
                 "m.local_id, m.server_id, m.local_type, m.sort_seq, m.real_sender_id, m.create_time, "
-                "m.message_content, m.compress_content, '' AS sender_username "
+                "m.message_content, m.compress_content, "
+                + packed_select
+                + "'' AS sender_username "
                 f"FROM {quoted} m "
                 f"{where_sql} "
                 "ORDER BY m.create_time ASC, m.sort_seq ASC, m.local_id ASC "
@@ -4000,6 +4358,7 @@ def _iter_rows_for_conversation(
                         raw_text=raw_text,
                         sender_username=sender_username,
                         is_sent=bool(is_sent),
+                        packed_info_data=r["packed_info_data"],
                     )
         finally:
             try:
@@ -4211,6 +4570,17 @@ def _parse_message_for_export(
                     pass
                 image_md5_candidates.insert(0, md5_hit)
 
+        # Realtime/WCDB exports and newer decrypted tables may carry the real local media basename
+        # in packed_info_data. Chat rendering already uses this field; keep HTML export aligned so
+        # clipboard/pasted images with sparse XML still materialize offline instead of falling back to [图片].
+        packed_md5 = _extract_md5_from_packed_info(getattr(row, "packed_info_data", None))
+        if _is_md5(packed_md5):
+            try:
+                image_md5_candidates.remove(packed_md5)
+            except ValueError:
+                pass
+            image_md5_candidates.insert(0, packed_md5)
+
         image_md5 = image_md5_candidates[0] if image_md5_candidates else ""
 
         url_or_id_candidates: list[str] = []
@@ -4279,6 +4649,12 @@ def _parse_message_for_export(
                 local_id=int(row.local_id or 0),
                 create_time=int(row.create_time or 0),
             )
+        packed_video_token = _extract_md5_from_packed_info(getattr(row, "packed_info_data", None))
+        if _is_md5(packed_video_token):
+            video_md5 = packed_video_token
+            if not _is_md5(video_thumb_md5):
+                video_thumb_md5 = packed_video_token
+                video_thumb_file_id = ""
         content_text = "[视频]"
     elif local_type == 47:
         render_type = "emoji"
@@ -4461,6 +4837,8 @@ def _write_conversation_json(
     end_time: Optional[int],
     want_types: Optional[set[str]],
     local_types: Optional[set[int]],
+    source: str = "decrypted",
+    rt_conn: Any | None = None,
     resource_conn: Optional[sqlite3.Connection],
     resource_chat_id: Optional[int],
     head_image_conn: Optional[sqlite3.Connection],
@@ -4582,6 +4960,8 @@ def _write_conversation_json(
                 start_time=start_time,
                 end_time=end_time,
                 local_types=local_types,
+                source=source,
+                rt_conn=rt_conn,
             ):
                 scanned += 1
                 _raise_if_job_cancelled(
@@ -4739,6 +5119,8 @@ def _write_conversation_txt(
     end_time: Optional[int],
     want_types: Optional[set[str]],
     local_types: Optional[set[int]],
+    source: str = "decrypted",
+    rt_conn: Any | None = None,
     resource_conn: Optional[sqlite3.Connection],
     resource_chat_id: Optional[int],
     head_image_conn: Optional[sqlite3.Connection],
@@ -4845,6 +5227,8 @@ def _write_conversation_txt(
                 start_time=start_time,
                 end_time=end_time,
                 local_types=local_types,
+                source=source,
+                rt_conn=rt_conn,
             ):
                 scanned += 1
                 _raise_if_job_cancelled(
@@ -5001,6 +5385,8 @@ def _write_conversation_html(
     end_time: Optional[int],
     want_types: Optional[set[str]],
     local_types: Optional[set[int]],
+    source: str = "decrypted",
+    rt_conn: Any | None = None,
     resource_conn: Optional[sqlite3.Connection],
     resource_chat_id: Optional[int],
     head_image_conn: Optional[sqlite3.Connection],
@@ -5696,6 +6082,8 @@ def _write_conversation_html(
                 start_time=start_time,
                 end_time=end_time,
                 local_types=local_types,
+                source=source,
+                rt_conn=rt_conn,
             ):
                 scanned += 1
                 _raise_if_job_cancelled(
